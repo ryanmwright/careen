@@ -175,3 +175,14 @@ func TestLoadLastSkipsDirtyTree(t *testing.T) {
 		t.Error("a dirty tree was kept")
 	}
 }
+
+func TestAtRevision(t *testing.T) {
+	f := Flake{Locked: "git+ssh://git@git.example/fleet.git?ref=main&rev=1111111111111111111111111111111111111111"}
+	want := "git+ssh://git@git.example/fleet.git?ref=main&rev=2222222222222222222222222222222222222222"
+	if got := f.AtRevision("2222222222222222222222222222222222222222"); got != want {
+		t.Errorf("AtRevision = %q", got)
+	}
+	if got := (Flake{Ref: "."}).AtRevision("2222222222222222222222222222222222222222"); got != "" {
+		t.Errorf("unlocked: %q", got)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -116,6 +117,25 @@ func (f Flake) BuildRef() string {
 		return f.Locked
 	}
 	return f.Ref
+}
+
+// AtRevision is Locked pinned to another commit of the same repository,
+// or "" when there's no locked URL to pin.
+func (f Flake) AtRevision(rev string) string {
+	u, err := url.Parse(f.Locked)
+	if f.Locked == "" || rev == "" || err != nil {
+		return ""
+	}
+	q := u.Query()
+	if !q.Has("rev") {
+		return ""
+	}
+	for _, k := range []string{"narHash", "lastModified", "revCount"} {
+		q.Del(k)
+	}
+	q.Set("rev", rev)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 type Inventory struct {

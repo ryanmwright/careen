@@ -141,15 +141,23 @@ func Scan(ctx context.Context, path, whitelist string) ([]Finding, error) {
 	cmd := exec.CommandContext(ctx, "vulnix", append(args, path)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	return result(cmd.Run(), stdout.Bytes(), stderr.String())
+}
+
+// result interprets a vulnix run.
+func result(err error, stdout []byte, stderr string) ([]Finding, error) {
 	// vulnix exits 2 when it found something, which isn't a failure here.
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == 2 {
 		err = nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("vulnix: %w: %s", err, execx.Tail(stderr.String(), 3))
+		return nil, fmt.Errorf("vulnix: %w: %s", err, execx.Tail(stderr, 3))
 	}
-	return Parse(stdout.Bytes())
+	// It also exits 2 when it fails, printing a traceback and no report.
+	if len(bytes.TrimSpace(stdout)) == 0 {
+		return nil, fmt.Errorf("vulnix printed no report: %s", execx.Tail(stderr, 1))
+	}
+	return Parse(stdout)
 }
 
 // cachePath is where host's last report is kept.
