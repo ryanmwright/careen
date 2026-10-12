@@ -130,7 +130,7 @@ type Inventory struct {
 // against that head rather than a stale one.
 // Evaluating the fleet means evaluating every host's NixOS configuration,
 // which takes seconds, so the result is cached by locked URL; a dirty tree
-// is never cached.
+// is never cached. The last fleet loaded for ref is also kept, for LoadLast.
 func Load(ctx context.Context, run execx.Runner, ref string, refresh bool) (*Inventory, error) {
 	if ref == "" {
 		return nil, contract.Usage("no flake given: pass --flake or set CAREEN_FLAKE")
@@ -174,22 +174,69 @@ func Load(ctx context.Context, run execx.Runner, ref string, refresh bool) (*Inv
 			return nil, contract.Failed("inventory", "reading the fleet from %s: %v", ref, err)
 		}
 	}
-	var raw map[string]Host
-	if err := json.Unmarshal(out, &raw); err != nil {
+	hosts, err := parseFleet(out)
+	if err != nil {
 		return nil, contract.Failed("inventory", "parsing %s#fleet: %v", ref, err)
 	}
+	inv.Hosts = hosts
 	if !cached {
-		writeCache(locked, out)
+		writeCache(cachePath(locked), out)
 	}
+	if locked != "" {
+		if b, err := json.Marshal(last{Flake: inv.Flake, Path: inv.Flake.Path, Fleet: out}); err == nil {
+			writeCache(lastPath(ref), b)
+		}
+	}
+	return inv, nil
+}
+
+// parseFleet reads the `fleet` output into hosts sorted by name.
+func parseFleet(out []byte) ([]Host, error) {
+	var raw map[string]Host
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, err
+	}
+	var hosts []Host
 	for name, h := range raw {
 		h.Name = name
 		if h.Tags == nil {
 			h.Tags = []string{}
 		}
-		inv.Hosts = append(inv.Hosts, h)
+		hosts = append(hosts, h)
 	}
-	slices.SortFunc(inv.Hosts, func(a, b Host) int { return strings.Compare(a.Name, b.Name) })
-	return inv, nil
+	slices.SortFunc(hosts, func(a, b Host) int { return strings.Compare(a.Name, b.Name) })
+	return hosts, nil
+}
+
+// last is the fleet Load last read for a ref.
+type last struct {
+	Flake Flake           `json:"flake"`
+	Path  string          `json:"path"`
+	Fleet json.RawMessage `json:"fleet"`
+}
+
+// LoadLast is the inventory Load last returned for ref, without asking
+// Nix, so it may be behind the ref's head; false if there is none (or the
+// ref was a dirty tree, which isn't kept).
+func LoadLast(ref string) (*Inventory, bool) {
+	path := lastPath(ref)
+	if path == "" {
+		return nil, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var l last
+	if err := json.Unmarshal(b, &l); err != nil {
+		return nil, false
+	}
+	hosts, err := parseFleet(l.Fleet)
+	if err != nil {
+		return nil, false
+	}
+	l.Flake.Path = l.Path
+	return &Inventory{Flake: l.Flake, Hosts: hosts}, true
 }
 
 // cachePath is where the fleet for a locked URL is kept, or "" if it
@@ -198,12 +245,24 @@ func cachePath(locked string) string {
 	if locked == "" {
 		return ""
 	}
+	return cacheFile(locked, "")
+}
+
+// lastPath is where the fleet last loaded for ref is kept.
+func lastPath(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	return cacheFile(ref, "last-")
+}
+
+func cacheFile(key, prefix string) string {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(locked))
-	return filepath.Join(base, "careen", "inventory", hex.EncodeToString(sum[:])+".json")
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(base, "careen", "inventory", prefix+hex.EncodeToString(sum[:])+".json")
 }
 
 func readCache(locked string) ([]byte, bool) {
@@ -216,8 +275,7 @@ func readCache(locked string) ([]byte, bool) {
 }
 
 // writeCache is best effort: a failure only costs the next run an eval.
-func writeCache(locked string, out []byte) {
-	path := cachePath(locked)
+func writeCache(path string, out []byte) {
 	if path == "" {
 		return
 	}

@@ -72,7 +72,8 @@ named with it. See [Reboot policy](reboot-policy.md).
 Evaluating `fleet` means evaluating every host's NixOS configuration, which takes seconds. careen
 caches the result per locked flake URL in `~/.cache/careen/inventory/`, so a repeated command
 against the same commit doesn't evaluate again. A working tree with uncommitted changes is never
-cached.
+cached. careen also keeps the fleet it loaded last for each flake reference; the TUI shows it on
+start, while the flake is fetched and evaluated again.
 
 Actions that change hosts, and `status`, ask Nix to re-fetch the flake first (`--refresh`), so
 they always use the head of the branch rather than a copy Nix fetched up to an hour ago.

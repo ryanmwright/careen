@@ -141,3 +141,37 @@ func TestSelect(t *testing.T) {
 		t.Errorf("unknown host: err = %v", err)
 	}
 }
+
+func TestLoadLast(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ref := "git+ssh://example/nix?ref=main"
+	if _, ok := LoadLast(ref); ok {
+		t.Fatal("LoadLast before any Load")
+	}
+	f := &fake{eval: fleetJSON, meta: `{"url":"git+ssh://example/nix?ref=main&rev=abc123","path":"/nix/store/src","revision":"abc123"}`}
+	want, err := Load(context.Background(), f.run, ref, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := LoadLast(ref)
+	if !ok {
+		t.Fatal("LoadLast after Load: none")
+	}
+	if got.Flake != want.Flake || !slices.Equal(got.names(), want.names()) || !slices.Equal(got.Hosts[0].Tags, want.Hosts[0].Tags) {
+		t.Errorf("LoadLast = %+v, want %+v", got, want)
+	}
+	if _, ok := LoadLast("git+ssh://example/other"); ok {
+		t.Error("LoadLast of another ref")
+	}
+}
+
+func TestLoadLastSkipsDirtyTree(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f := &fake{eval: fleetJSON, meta: `{"url":"git+file:///src/nix","dirtyRevision":"abc123-dirty"}`}
+	if _, err := Load(context.Background(), f.run, ".", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := LoadLast("."); ok {
+		t.Error("a dirty tree was kept")
+	}
+}

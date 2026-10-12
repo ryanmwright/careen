@@ -10,6 +10,11 @@ pane for the selected host, and runs every action from the keyboard. Each dialog
 plan `--plan` prints, and actions run the same code as the commands, so anything you do here you
 can also script.
 
+On start the TUI probes the hosts of the fleet it loaded last, so the table shows at once, and marks
+it *refreshing…* until the flake has been fetched and evaluated. Until then, drift is measured against
+the commit it saw last. After a new commit, especially one that changes `flake.lock`, that
+evaluation can take a while.
+
 ## Keys
 
 | Key | Action |
