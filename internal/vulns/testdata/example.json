@@ -1,0 +1,90 @@
+[
+ {
+  "name": "busybox-1.37.0",
+  "pname": "busybox",
+  "version": "1.37.0",
+  "derivation": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-busybox-1.37.0.drv",
+  "affected_by": [
+   "CVE-2000-0001"
+  ],
+  "whitelisted": [],
+  "cvssv3_basescore": {
+   "CVE-2000-0001": 3.2
+  },
+  "description": {
+   "CVE-2000-0001": "An example vulnerability."
+  }
+ },
+ {
+  "name": "git-2.54.0",
+  "pname": "git",
+  "version": "2.54.0",
+  "derivation": "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-git-2.54.0.drv",
+  "affected_by": [
+   "CVE-2000-0002",
+   "CVE-2000-0003"
+  ],
+  "whitelisted": [],
+  "cvssv3_basescore": {
+   "CVE-2000-0002": 5.3,
+   "CVE-2000-0003": 8.8
+  },
+  "description": {
+   "CVE-2000-0002": "An example vulnerability.",
+   "CVE-2000-0003": "An example vulnerability."
+  }
+ },
+ {
+  "name": "glibc-2.42",
+  "pname": "glibc",
+  "version": "2.42",
+  "derivation": "/nix/store/cccccccccccccccccccccccccccccccc-glibc-2.42.drv",
+  "affected_by": [
+   "CVE-2000-0004",
+   "CVE-2000-0005"
+  ],
+  "whitelisted": [],
+  "cvssv3_basescore": {
+   "CVE-2000-0004": 7.5,
+   "CVE-2000-0005": 9.8
+  },
+  "description": {
+   "CVE-2000-0004": "An example vulnerability.",
+   "CVE-2000-0005": "An example vulnerability."
+  }
+ },
+ {
+  "name": "openssl-3.5.8",
+  "pname": "openssl",
+  "version": "3.5.8",
+  "derivation": "/nix/store/dddddddddddddddddddddddddddddddd-openssl-3.5.8.drv",
+  "affected_by": [
+   "CVE-2000-0006"
+  ],
+  "whitelisted": [],
+  "cvssv3_basescore": {
+   "CVE-2000-0006": 9.8
+  },
+  "description": {
+   "CVE-2000-0006": "An example vulnerability."
+  }
+ },
+ {
+  "name": "sqlite-3.51.2",
+  "pname": "sqlite",
+  "version": "3.51.2",
+  "derivation": "/nix/store/ffffffffffffffffffffffffffffffff-sqlite-3.51.2.drv",
+  "affected_by": [
+   "CVE-2000-0007",
+   "CVE-2000-0008"
+  ],
+  "whitelisted": [],
+  "cvssv3_basescore": {
+   "CVE-2000-0007": 7.8
+  },
+  "description": {
+   "CVE-2000-0007": "An example vulnerability.",
+   "CVE-2000-0008": "An example vulnerability."
+  }
+ }
+]

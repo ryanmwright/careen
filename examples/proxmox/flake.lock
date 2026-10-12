@@ -1,0 +1,48 @@
+{
+  "nodes": {
+    "careen": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1791749601,
+        "narHash": "sha256-ZYqDiEZVu3Xpoj18N3NnaVLNh2VNhvz0Idhjj3C0BUI=",
+        "owner": "ryanmwright",
+        "repo": "careen",
+        "rev": "bcc4f70d8458615d5e62e4ab9c84c6b346b68757",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ryanmwright",
+        "repo": "careen",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1791594108,
+        "narHash": "sha256-XK4KceonkwD8LuMAt/vNrz982mXJM5jeHAxMwsUXXAQ=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "6510408d147d8c5e6d76043e899e9251756f6a75",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "careen": "careen",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

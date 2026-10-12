@@ -1,0 +1,21 @@
+# {{.Name}}: made by careen add from templates/host.nix.tmpl. Set its pve
+# settings (node, vmid, ipv4) before careen up.
+{ modulesPath, ... }:
+{
+  imports = [ (modulesPath + "/profiles/qemu-guest.nix") ];
+  fleet = {
+    enable = true;
+    address = "{{.Address}}";
+    provisioner = "proxmox";
+  };
+  pve = {
+    enable = true;
+    node = "pve1";
+    vmid = 0; # choose one
+    ipv4 = "{{.Address}}/24";
+    gateway = "10.0.0.1";
+  };
+  fileSystems."/" = { device = "/dev/disk/by-label/nixos"; fsType = "ext4"; autoResize = true; };
+  boot.growPartition = true;
+  boot.loader.grub.device = "/dev/vda";
+}

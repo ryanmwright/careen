@@ -1,0 +1,12 @@
+keys:
+  # Your master key: the public key age-keygen prints.
+  - &admin age1REPLACEME_ADMIN
+
+creation_rules:
+  # The Proxmox API token: the master key only, no host can read it.
+  - path_regex: secrets/pve/.*\.yaml$
+    key_groups:
+      - age: [*admin]
+  - path_regex: secrets/hosts/app1/.*\.yaml$
+    key_groups:
+      - age: [*admin]

@@ -1,0 +1,42 @@
+# The example flakes behind the tutorials must keep working: each evaluates,
+# its hosts build, and careen reads its fleet (scripts/check-examples.sh).
+name: examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [first-fleet, secrets, rolling, proxmox]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix develop -c scripts/check-examples.sh ${{ matrix.example }}
+
+  # careen in one VM deploying to, rolling back and rebooting another.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+            # The e2e closure is large; a failed cache download (HTTP 416 on
+            # resume) builds or fetches from source instead of failing the job.
+            fallback = true
+      - run: nix build .#tests.e2e --print-build-logs

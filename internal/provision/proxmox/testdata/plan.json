@@ -1,0 +1,8 @@
+{"format_version":"1.2","resource_changes":[
+ {"address":"proxmox_virtual_environment_vm.worker1","type":"proxmox_virtual_environment_vm","name":"worker1","change":{"actions":["update"]}},
+ {"address":"proxmox_virtual_environment_vm.cp1","type":"proxmox_virtual_environment_vm","name":"cp1","change":{"actions":["create"]}},
+ {"address":"proxmox_virtual_environment_vm.cp2","type":"proxmox_virtual_environment_vm","name":"cp2","change":{"actions":["delete","create"]}},
+ {"address":"proxmox_virtual_environment_vm.cp3","type":"proxmox_virtual_environment_vm","name":"cp3","change":{"actions":["no-op"]}},
+ {"address":"proxmox_virtual_environment_vm.old","type":"proxmox_virtual_environment_vm","name":"old","change":{"actions":["delete"]}},
+ {"address":"null_resource.x","type":"null_resource","name":"x","change":{"actions":["create"]}}
+]}

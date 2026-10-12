@@ -1,0 +1,49 @@
+keys:
+  # The admin's PGP key.
+  - &admin_pgp 0123456789ABCDEF0123456789ABCDEF01234567
+
+  # Host age keys, derived from each host's SSH host key.
+  # A placeholder stands in until the host is registered.
+  # (careen keys register HOST)
+  - &app2_host age1yrfwes0nhue60pqrtlq4khnsfkw08xjqkxkhvv94n72fvv63mvyq8jzw24
+  - &mgr_host age1REPLACEME_MGR
+  - &app4_host age15x3z6vza8qpyctamk6kyfehfxd3yuz9a4hr6lghhga5v3d5dx96qdgw54h
+  - &app5_host age1REPLACEME_APP5
+  - &app1_host age1hpg07cdceyvut5k7vswyjt8gulz58f3gdd3zyyazxmlww3dpaacs2h0pkp
+  - &app3_host age147e9e0mql6t2w32mfmhq7dwnzqz56n6ycs6wc4tssz6w96kf0cxqhq7az0
+
+creation_rules:
+  - path_regex: secrets/hosts/app2/.*\.yaml$
+    key_groups:
+      - pgp: [*admin_pgp]
+        age: [*app2_host]
+
+  - path_regex: secrets/hosts/mgr/.*\.yaml$
+    key_groups:
+      - pgp: [*admin_pgp]
+        age: [*mgr_host]
+
+  - path_regex: secrets/hosts/app4/.*\.yaml$
+    key_groups:
+      - pgp: [*admin_pgp]
+        age: [*app4_host]
+
+  - path_regex: secrets/hosts/app5/.*\.yaml$
+    key_groups:
+      - pgp: [*admin_pgp]
+        age: [*app5_host]
+
+  - path_regex: secrets/hosts/app1/.*\.yaml$
+    key_groups:
+      - pgp: [*admin_pgp]
+        age: [*app1_host]
+
+  - path_regex: secrets/hosts/app3/.*\.yaml$
+    key_groups:
+      - pgp: [*admin_pgp]
+        age: [*app3_host]
+
+  - path_regex: secrets/common/.*\.yaml$
+    key_groups:
+      - pgp: [*admin_pgp]
+        age: [*app2_host, *mgr_host, *app4_host, *app5_host, *app1_host, *app3_host]

@@ -1,0 +1,57 @@
+{
+  "schema": "careen.status/v1",
+  "generatedAt": "2026-10-09T12:00:00Z",
+  "flake": {
+    "ref": "git+ssh://example/nix?ref=main",
+    "revision": "3c1e9a0b7d2f4e6a8c0b1d3f5a7c9e1b2d4f6a8c",
+    "dirty": false
+  },
+  "hosts": [
+    {
+      "host": "app1",
+      "address": "10.0.0.40",
+      "revision": "7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f5a7b",
+      "dirty": true,
+      "drift": "differs",
+      "rebootPending": true,
+      "rebootReasons": [
+        "kernel",
+        "kernel-modules"
+      ],
+      "systemState": "degraded",
+      "failedUnits": [
+        "nginx.service"
+      ],
+      "uptimeSeconds": 273600,
+      "storeUsedBytes": 42949672960,
+      "storeSizeBytes": 107374182400,
+      "generations": 14,
+      "lastSwitch": "2026-10-08T14:02:00Z",
+      "nixosVersion": "26.05"
+    },
+    {
+      "host": "app2",
+      "address": "app2.example",
+      "revision": "3c1e9a0b7d2f4e6a8c0b1d3f5a7c9e1b2d4f6a8c",
+      "dirty": false,
+      "drift": "current",
+      "rebootPending": false,
+      "rebootReasons": [],
+      "systemState": "running",
+      "failedUnits": [],
+      "uptimeSeconds": 3600,
+      "storeUsedBytes": 0,
+      "storeSizeBytes": 0,
+      "generations": 0
+    },
+    {
+      "host": "mgr",
+      "address": "mgr.example",
+      "error": {
+        "code": "unreachable",
+        "message": "ssh: connect to host mgr.example port 22: No route to host",
+        "host": "mgr"
+      }
+    }
+  ]
+}

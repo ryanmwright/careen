@@ -1,0 +1,111 @@
+site_name: careen
+site_description: Patch, reboot, provision and inspect a NixOS fleet defined in a flake
+site_url: https://ryanmwright.github.io/careen/
+repo_url: https://github.com/ryanmwright/careen
+repo_name: ryanmwright/careen
+edit_uri: edit/main/docs/
+
+# Broken links and anchors fail the build.
+strict: true
+validation:
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn
+
+theme:
+  name: material
+  icon:
+    logo: material/sail-boat
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - content.action.edit
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      # Tutorials include the example flakes' files, so they can't drift.
+      base_path: [examples]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home:
+      - index.md
+      - getting-started.md
+  - Tutorials:
+      - tutorials/index.md
+      - tutorials/first-fleet.md
+      - tutorials/secrets.md
+      - tutorials/rolling-reboots.md
+      - tutorials/proxmox.md
+      - tutorials/operating.md
+  - Concepts:
+      - concepts/inventory.md
+      - concepts/flake-settings.md
+      - concepts/drift-and-revisions.md
+      - concepts/reboot-policy.md
+  - Guides:
+      - guides/deploy-and-rollback.md
+      - guides/reboots.md
+      - guides/day-2.md
+      - guides/onboarding.md
+      - guides/provisioning-proxmox.md
+      - guides/tui.md
+      - guides/scripting.md
+  - Reference:
+      - reference/cli.md
+      - reference/json-output.md
+      - reference/inventory-fields.md
+      - reference/environment.md
+  - Project:
+      - development.md
+      - roadmap.md
