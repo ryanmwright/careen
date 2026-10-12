@@ -44,6 +44,11 @@ $ careen vulns --only web1 --refresh
 scans each host's *running* system with [vulnix](https://github.com/nix-community/vulnix)
 against the NVD. The scan runs where careen runs, not on the hosts: a system that isn't in the
 local store is copied in first, and the first scan downloads the NVD data (a few hundred MB).
+vulnix reads the system's derivation, which copying doesn't bring and garbage collection
+removes; when it's missing, careen evaluates the host's system from the flake to write it again,
+at the commit the host was deployed from. If neither that commit nor the flake's current one
+gives the host's running system (say, it was deployed from a dirty tree), its scan fails until
+it's deployed again.
 
 - Reports are cached per host and system for `--max-age` (24h); `--refresh` rescans.
 - CVEs listed in `vulnix-whitelist.toml` at the flake's root are left out, so accepted findings

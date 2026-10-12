@@ -2,6 +2,8 @@ package vulns
 
 import (
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,5 +65,21 @@ func TestCache(t *testing.T) {
 	}
 	if Cached("db", "/nix/store/a-system", 0) != nil {
 		t.Error("another host's report counted")
+	}
+}
+
+func TestResult(t *testing.T) {
+	// vulnix exits 2 both when it found CVEs and when it failed.
+	exit2 := exec.Command("sh", "-c", "exit 2").Run()
+	if fs, err := result(exit2, []byte(`[{"pname":"glibc","affected_by":["CVE-2026-0001"]}]`), ""); err != nil || len(fs) != 1 {
+		t.Errorf("findings: %v %v", fs, err)
+	}
+	if fs, err := result(nil, []byte("[]\n"), ""); err != nil || len(fs) != 0 {
+		t.Errorf("clean: %v %v", fs, err)
+	}
+	stderr := "Traceback (most recent call last):\n  ...\nvulnix.nix.DeriverLookupError: Cannot determine deriver for path `/nix/store/a-system`\n"
+	_, err := result(exit2, nil, stderr)
+	if err == nil || !strings.Contains(err.Error(), "Cannot determine deriver") {
+		t.Errorf("failure: %v", err)
 	}
 }

@@ -3,8 +3,11 @@ package actions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/ryanmwright/careen/internal/build"
@@ -89,6 +92,10 @@ func Vulns(ctx context.Context, inv *inventory.Inventory, sel inventory.Selector
 					break
 				}
 			}
+			if err := ensureDerivation(ctx, inv.Flake, h.Name, sys, o.Result.ConfigRevision, progress); err != nil {
+				fail("derivation", err)
+				break
+			}
 			progress(h.Name, "scanning with vulnix")
 			fs, err := vulns.Scan(ctx, sys, rep.Whitelist)
 			if err != nil {
@@ -102,6 +109,45 @@ func Vulns(ctx context.Context, inv *inventory.Inventory, sel inventory.Selector
 		rep.Hosts = append(rep.Hosts, r)
 	}
 	return rep, nil
+}
+
+// ensureDerivation makes sure the derivation of host's system sys is in the
+// local store. vulnix finds packages through derivations, which nix copy
+// doesn't bring and garbage collection removes; evaluating the host's system
+// from the flake writes them again, at the revision the host was deployed
+// from (rev, from the host) when it's known, else at the flake's own.
+func ensureDerivation(ctx context.Context, flake inventory.Flake, host, sys, rev string, progress func(host, msg string)) error {
+	out, err := execx.Run(ctx, "nix-store", "--query", "--deriver", sys)
+	if err != nil {
+		return err
+	}
+	if drv := strings.TrimSpace(string(out)); drv != "unknown-deriver" && fileExists(drv) {
+		return nil
+	}
+	refs := []string{flake.BuildRef()}
+	if base, dirty := strings.CutSuffix(rev, "-dirty"); !dirty && base != flake.Revision {
+		if r := flake.AtRevision(base); r != "" {
+			refs = []string{r, flake.BuildRef()}
+		}
+	}
+	progress(host, "evaluating its system: its derivation isn't here")
+	for _, ref := range refs {
+		if builds(ctx, ref, host, sys) {
+			return nil
+		}
+	}
+	return fmt.Errorf("vulnix needs the derivation of %s, which isn't in the store here, and evaluating the host from %s doesn't give that system; deploy the host and scan again", sys, strings.Join(refs, " or "))
+}
+
+// builds is whether evaluating host from ref gives system sys, writing its
+// derivations into the local store.
+func builds(ctx context.Context, ref, host, sys string) bool {
+	out, err := execx.Run(ctx, "nix", "path-info", "--derivation", build.Toplevel(ref, host))
+	if err != nil {
+		return false
+	}
+	out, err = execx.Run(ctx, "nix-store", "--query", "--outputs", strings.TrimSpace(string(out)))
+	return err == nil && slices.Contains(strings.Fields(string(out)), sys)
 }
 
 var errNoSystem = errors.New("the host reports no current system")
