@@ -136,9 +136,10 @@ type Model struct {
 }
 
 // New creates the model. interval is how often the status refreshes.
+// It starts out refreshing: Init loads the status.
 func New(be Backend, interval time.Duration) Model {
 	ctx, cancel := context.WithCancel(context.Background())
-	return Model{be: be, ctx: ctx, cancel: cancel, interval: interval, now: time.Now, width: 100, height: 30, extra: newExtraState()}
+	return Model{be: be, ctx: ctx, cancel: cancel, interval: interval, now: time.Now, width: 100, height: 30, extra: newExtraState(), refreshing: true}
 }
 
 // Messages.
@@ -147,6 +148,8 @@ type (
 		inv *inventory.Inventory
 		rep status.Report
 		err error
+		// last: the fleet careen saw last, shown until the refresh lands.
+		last bool
 	}
 	tickMsg time.Time
 	invMsg  struct {
@@ -175,8 +178,18 @@ type (
 	shellMsg    struct{ err error }
 )
 
+// Init shows the fleet careen saw last while the flake is fetched and
+// evaluated, which can take a while after a new commit.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refresh(), tick())
+	be, ctx := m.be, m.ctx
+	last := func() tea.Msg {
+		inv, rep, ok := be.LastStatus(ctx)
+		if !ok {
+			return nil
+		}
+		return statusMsg{inv: inv, rep: rep, last: true}
+	}
+	return tea.Batch(last, m.refresh(), tick())
 }
 
 func tick() tea.Cmd {
@@ -187,7 +200,7 @@ func (m Model) refresh() tea.Cmd {
 	be, ctx := m.be, m.ctx
 	return func() tea.Msg {
 		inv, rep, err := be.Status(ctx)
-		return statusMsg{inv, rep, err}
+		return statusMsg{inv: inv, rep: rep, err: err}
 	}
 }
 
@@ -217,6 +230,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, tick())
 
 	case statusMsg:
+		if msg.last {
+			if m.rep == nil {
+				m.inv, m.rep, m.refreshed = msg.inv, &msg.rep, m.now()
+				m.keepSelection()
+				m.loadVulnCache()
+			}
+			return m, nil
+		}
 		m.refreshing = false
 		m.refreshErr = msg.err
 		if msg.err == nil {
@@ -265,13 +286,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			w := &m.onboard.wiz
 			w.status, w.stage, w.err = msg.add, wizFinished, msg.err
 		}
+		m.refreshing = true
 		switch m.mode {
 		case modeKeys:
 			return m, tea.Batch(m.refresh(), m.loadKeys())
 		case modeSecrets:
 			return m, tea.Batch(m.refresh(), m.loadSecrets())
 		}
-		m.refreshing = true
 		return m, m.refresh()
 
 	case sudoMsg:

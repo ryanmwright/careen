@@ -61,7 +61,7 @@ func (r Remote) SSHArgs(remoteCmd string) []string {
 		args = append(args,
 			"-o", "ControlMaster=auto",
 			"-o", "ControlPath="+filepath.Join(dir, "%C"),
-			"-o", "ControlPersist=60s",
+			"-o", "ControlPersist=10m",
 		)
 	} else {
 		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")

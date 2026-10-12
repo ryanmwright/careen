@@ -19,8 +19,8 @@ it provisions.
 
 | Path | What | Safe to delete? |
 | --- | --- | --- |
-| `~/.cache/careen/inventory/` | The evaluated `fleet` per locked flake URL. | Yes; the next command evaluates again. |
-| `~/.cache/careen/ssh/` | SSH connection sockets, one per host, shared between commands. | Yes. |
+| `~/.cache/careen/inventory/` | The evaluated `fleet` per locked flake URL, and the last one loaded per flake reference (`last-*.json`), which the TUI shows while it starts. | Yes; the next command evaluates again. |
+| `~/.cache/careen/ssh/` | SSH connection sockets, one per host, shared between commands and kept open for 10 minutes. | Yes. |
 | `~/.cache/careen/vulns/` | The last vulnix report per host. | Yes; the next `careen vulns` rescans. |
 | `~/.local/state/careen/pve/` | The rendered OpenTofu config, careen's override (`careen_override.tf.json`, no provider reboots), the provider lock file and **OpenTofu's state** for Proxmox VMs. | **No.** Without the state, careen no longer knows the VMs it created. Back it up. |
 

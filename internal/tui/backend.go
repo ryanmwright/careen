@@ -23,6 +23,9 @@ type Backend interface {
 	// Status is what `careen status` shows: the inventory and a probe of
 	// every host.
 	Status(ctx context.Context) (*inventory.Inventory, status.Report, error)
+	// LastStatus is Status for the fleet careen loaded last from the flake,
+	// without asking Nix; false if there is none.
+	LastStatus(ctx context.Context) (*inventory.Inventory, status.Report, bool)
 	// Inventory loads the flake fresh, as actions do before planning.
 	Inventory(ctx context.Context) (*inventory.Inventory, error)
 	PlanDeploy(inv *inventory.Inventory, only []string, rebootMode string, rebootSelf bool) (*actions.DeployPlan, error)
@@ -93,6 +96,14 @@ func (r real) Status(ctx context.Context) (*inventory.Inventory, status.Report, 
 		return nil, status.Report{}, err
 	}
 	return inv, status.Build(inv.Flake, probe.New().ProbeAll(ctx, inv.Hosts)), nil
+}
+
+func (r real) LastStatus(ctx context.Context) (*inventory.Inventory, status.Report, bool) {
+	inv, ok := inventory.LoadLast(r.o.Flake)
+	if !ok {
+		return nil, status.Report{}, false
+	}
+	return inv, status.Build(inv.Flake, probe.New().ProbeAll(ctx, inv.Hosts)), true
 }
 
 func (r real) Inventory(ctx context.Context) (*inventory.Inventory, error) {

@@ -32,6 +32,8 @@ type fakeBackend struct {
 	release  chan struct{} // Deploy waits on it, when set
 	execs    []string
 	cached   *vulns.Report
+	statuses int                  // Status calls
+	last     *inventory.Inventory // what LastStatus serves, when set
 }
 
 func newFake() *fakeBackend {
@@ -39,12 +41,12 @@ func newFake() *fakeBackend {
 		return inventory.Host{Name: name, Address: name + ".lan", User: "admin", Deploy: deploy, RebootPolicy: policy, BuildOn: "local", Operation: "switch", Tags: []string{}}
 	}
 	inv := &inventory.Inventory{
-		Flake: inventory.Flake{Ref: "git+ssh://x/nix", Revision: "5c241ed0000", Locked: "git+ssh://x/nix?rev=5c241ed0000"},
+		Flake: inventory.Flake{Ref: "git+ssh://x/nix", Revision: "e9f1c070000", Locked: "git+ssh://x/nix?rev=e9f1c070000"},
 		Hosts: []inventory.Host{h("app1", true, "auto"), h("mgr", false, "manual"), h("app3", true, "auto")},
 	}
 	st := func(rev string, pending bool, failed ...string) *status.State {
 		s := &status.State{Revision: rev, System: "/nix/store/sys-" + rev, Drift: status.DriftDiffers, RebootReasons: []string{}, SystemState: "running", FailedUnits: failed, UptimeSeconds: 3600}
-		if rev == "5c241ed0000" {
+		if rev == "e9f1c070000" {
 			s.Drift = status.DriftCurrent
 		}
 		if pending {
@@ -56,15 +58,26 @@ func newFake() *fakeBackend {
 		return s
 	}
 	rep := status.Report{Flake: inv.Flake, Hosts: []status.Row{
-		{Host: "app1", Address: "app1.lan", State: st("44a2403", false)},
-		{Host: "mgr", Address: "mgr.lan", State: st("5c241ed0000", true, "nginx.service")},
+		{Host: "app1", Address: "app1.lan", State: st("b72d6a1", false)},
+		{Host: "mgr", Address: "mgr.lan", State: st("e9f1c070000", true, "nginx.service")},
 		{Host: "app3", Address: "app3.lan", Error: &contract.Error{Code: "unreachable", Message: "no route to host"}},
 	}}
 	return &fakeBackend{inv: inv, rep: rep}
 }
 
 func (f *fakeBackend) Status(context.Context) (*inventory.Inventory, status.Report, error) {
+	f.mu.Lock()
+	f.statuses++
+	f.mu.Unlock()
 	return f.inv, f.rep, nil
+}
+func (f *fakeBackend) LastStatus(context.Context) (*inventory.Inventory, status.Report, bool) {
+	if f.last == nil {
+		return nil, status.Report{}, false
+	}
+	rep := f.rep
+	rep.Flake = f.last.Flake
+	return f.last, rep, true
 }
 func (f *fakeBackend) Inventory(context.Context) (*inventory.Inventory, error) { return f.inv, nil }
 func (f *fakeBackend) PlanDeploy(inv *inventory.Inventory, only []string, mode string, self bool) (*actions.DeployPlan, error) {
@@ -127,8 +140,8 @@ func (f *fakeBackend) Exec(_ context.Context, p *actions.ExecPlan, _ func(contra
 }
 func (f *fakeBackend) Vulns(_ context.Context, _ *inventory.Inventory, only []string, _ bool, progress func(host, msg string)) (actions.VulnsReport, error) {
 	progress(only[0], "scanning with vulnix")
-	// app1 runs /nix/store/sys-44a2403 in the fake fleet.
-	r := vulns.Report{Host: only[0], System: "/nix/store/sys-44a2403", Summary: vulns.Summary{Critical: 1, High: 2},
+	// app1 runs /nix/store/sys-b72d6a1 in the fake fleet.
+	r := vulns.Report{Host: only[0], System: "/nix/store/sys-b72d6a1", Summary: vulns.Summary{Critical: 1, High: 2},
 		Findings: []vulns.Finding{{Package: "glibc", Version: "2.42", CVEs: []vulns.CVE{{ID: "CVE-2026-5450", Score: 9.8}}}}}
 	f.mu.Lock()
 	f.cached = &r
@@ -246,10 +259,53 @@ func loaded(t *testing.T, be Backend) Model {
 	return run(t, m, m.refresh()())
 }
 
+// The tick after Init mustn't start a second load while the first runs.
+func TestStartLoadsOnce(t *testing.T) {
+	pending = nil
+	f := newFake()
+	m := New(f, 30*time.Second)
+	m = run(t, m, tickMsg(time.Now()))
+	m = run(t, m, m.refresh()())
+	if f.statuses != 1 {
+		t.Errorf("Status called %d times, want 1", f.statuses)
+	}
+	if !strings.Contains(screen(m), "updated") {
+		t.Errorf("header after load:\n%s", screen(m))
+	}
+}
+
+// The last fleet shows while the refresh runs, but never replaces it.
+func TestStartShowsLastFleet(t *testing.T) {
+	pending = nil
+	f := newFake()
+	old := *f.inv
+	old.Flake.Revision = "b72d6a1"
+	f.last = &old
+	m := New(f, 30*time.Second)
+	m.width, m.height = 140, 40
+	lastMsg := func() tea.Msg {
+		inv, rep, _ := f.LastStatus(context.Background())
+		return statusMsg{inv: inv, rep: rep, last: true}
+	}
+
+	shown := run(t, m, lastMsg())
+	if s := screen(shown); !strings.Contains(s, "@ b72d6a1") || !strings.Contains(s, "refreshing…") {
+		t.Errorf("last fleet:\n%s", s)
+	}
+	shown = run(t, shown, m.refresh()())
+	if s := screen(shown); !strings.Contains(s, "@ e9f1c07") || strings.Contains(s, "refreshing…") {
+		t.Errorf("after refresh:\n%s", s)
+	}
+	late := run(t, shown, lastMsg())
+	if s := screen(late); !strings.Contains(s, "@ e9f1c07") {
+		t.Errorf("late last fleet replaced the refresh:\n%s", s)
+	}
+}
+
 func TestTableAndDetail(t *testing.T) {
 	m := loaded(t, newFake())
 	s := screen(m)
-	for _, want := range []string{"flake git+ssh://x/nix @ 5c241ed", "app1", "44a2403", "differs", "unreachable: no route to host", "HOST app1", "failed     none"} {
+	for _, want := range []string{"flake git+ssh://x/nix @ e9f1c07", "app1", "b72d6a1", "differs", "unreachable: no route to host", "HOST app1", "failed     none"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("screen lacks %q:\n%s", want, s)
 		}
@@ -427,7 +483,7 @@ func TestVulnsViewAndColumn(t *testing.T) {
 	if !strings.Contains(s, "1C 2H") || !strings.Contains(s, "glibc 2.42") || !strings.Contains(s, "CVE-2026-5450") {
 		t.Errorf("vulns view:\n%s", s)
 	}
-	// The fake scanned system /nix/store/sys-44a2403, app1's.
+	// The fake scanned system /nix/store/sys-b72d6a1, app1's.
 	m = press(t, m, "esc")
 	if s := screen(m); !strings.Contains(s, "1C 2H") || !strings.Contains(s, "vulns      1C 2H") {
 		t.Errorf("column and detail after scan:\n%s", s)

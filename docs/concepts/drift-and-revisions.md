@@ -56,5 +56,6 @@ never cached.
 
 `status` runs a small shell script on each host over a single SSH connection; it reads the
 current and booted systems, the kernel and initrd, failed units, uptime and store use. SSH
-connections are shared per host (in `~/.cache/careen/ssh/`), so the many short commands careen
-runs during a deploy reuse one connection.
+connections are shared per host (in `~/.cache/careen/ssh/`) and stay open for 10 minutes after the
+last use, so the many short commands careen runs during a deploy, and commands run soon after
+each other, reuse one connection.
