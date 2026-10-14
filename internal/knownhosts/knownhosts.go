@@ -42,6 +42,29 @@ func Remove(path string, hosts ...string) error {
 	return write(path, strings.Join(keep, ""))
 }
 
+// Keys returns the keys ("ssh-ed25519 AAAA...") known_hosts has for any of
+// hosts. A missing file has none.
+func Keys(path string, hosts ...string) []string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var keys []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if !matches(line, hosts) {
+			continue
+		}
+		f := strings.Fields(line)
+		if strings.HasPrefix(f[0], "@") { // matches() guarantees the field count
+			f = f[1:]
+		}
+		if len(f) >= 3 {
+			keys = append(keys, f[1]+" "+f[2])
+		}
+	}
+	return keys
+}
+
 // Set replaces hosts' entries with one line giving them key
 // ("ssh-ed25519 AAAA...").
 func Set(path, key string, hosts ...string) error {

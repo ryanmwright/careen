@@ -18,6 +18,7 @@ import (
 	"github.com/ryanmwright/careen/internal/provision"
 	"github.com/ryanmwright/careen/internal/provision/proxmox"
 	"github.com/ryanmwright/careen/internal/repo"
+	"github.com/ryanmwright/careen/internal/sshx"
 )
 
 // machineSetup loads what up, down and vm need: the fleet, the flake's
@@ -27,7 +28,7 @@ func machineSetup(ctx context.Context, g *globalFlags, all bool) (*inventory.Inv
 	if !all && len(sel.Only) == 0 && len(sel.Tags) == 0 {
 		return nil, repo.Settings{}, nil, sel, contract.Usage("choose hosts with --all, --only or --tag")
 	}
-	inv, err := inventory.Load(ctx, execx.Run, g.flake, true)
+	inv, err := inventory.Load(ctx, g.timings.Wrap(execx.Run), g.flake, true)
 	if err != nil {
 		return nil, repo.Settings{}, nil, sel, err
 	}
@@ -42,11 +43,15 @@ func machineSetup(ctx context.Context, g *globalFlags, all bool) (*inventory.Inv
 			return nil, repo.Settings{}, nil, sel, contract.Usage("no host in the fleet is provisioned by careen")
 		}
 	}
-	settings, err := repo.LoadSettings(ctx, execx.Run, inv.Flake.BuildRef())
+	run := g.timings.Wrap(inventory.CacheEvals(inv.Flake.Locked, execx.Run))
+	settings, err := repo.LoadSettings(ctx, run, inv.Flake.BuildRef())
 	if err != nil {
 		return nil, repo.Settings{}, nil, sel, contract.Failed("settings", "%v", err)
 	}
-	return inv, settings, actions.NewProvisioners(inv, decrypter(g)), sel, nil
+	ps := actions.NewProvisioners(inv, decrypter(g))
+	ps.Proxmox().Run = run
+	ps.Proxmox().Cmd = proxmox.TimedCmd(g.timings, proxmox.RunCmd)
+	return inv, settings, ps, sel, nil
 }
 
 // decrypter says on stderr (with a bell) when a master-key decryption is
@@ -58,9 +63,9 @@ func decrypter(g *globalFlags) *actions.Decrypter {
 
 func newUpCmd(g *globalFlags) *cobra.Command {
 	var (
-		all, planOnly, yes bool
-		opts               actions.UpOptions
-		rf                 rebootFlags
+		all, planOnly, yes, timings bool
+		opts                        actions.UpOptions
+		rf                          rebootFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -84,9 +89,17 @@ failure. --all is every host careen provisions.`,
 			if planOnly {
 				g.schema, g.onError = actions.UpPlanSchema, nil
 			}
+			if timings && !g.json {
+				defer printTimings(os.Stderr, g.timings)
+			}
+			opts.Timings, opts.Deploy.Run = g.timings, g.timings.Wrap(execx.Run)
+			sshx.Observe(g.timings.Add)
 			inv, settings, ps, sel, err := machineSetup(ctx, g, all)
 			if err != nil {
 				return err
+			}
+			if !g.json {
+				actions.ReportFlake(ctx, os.Stderr, inv.Flake, g.repo)
 			}
 			plan, err := actions.PlanUp(ctx, inv, sel, ps, settings, opts.Deploy.AllowDirty)
 			if err != nil {
@@ -120,11 +133,13 @@ failure. --all is every host careen provisions.`,
 	f.BoolVar(&all, "all", false, "every host careen provisions")
 	f.BoolVar(&planOnly, "plan", false, "show what would be done and stop")
 	f.BoolVar(&yes, "yes", false, "don't ask for confirmation")
+	f.BoolVar(&timings, "timings", false, "afterwards, list how long each step and each nix, tofu and ssh command took")
 	f.BoolVar(&opts.Deploy.AllowDirty, "allow-dirty", false, "use a flake with uncommitted changes")
 	f.StringVar(&opts.Deploy.BuildOn, "build-on", "", "override where to build: local, remote or target")
 	f.StringVar(&opts.Deploy.Builder, "builder", "", "override the remote builder's store URI")
 	f.DurationVar(&opts.Deploy.Watchdog, "rollback-after", 5*time.Minute, "a host rolls back by itself unless careen confirms it within this time (0 turns it off)")
 	f.DurationVar(&opts.Deploy.Settle, "settle", 10*time.Second, "wait this long after a switch before checking health")
+	f.BoolVar(&opts.NoAgentWait, "no-agent-wait", false, "for a VM that exists, skip waiting for its QEMU guest agent and check its SSH key against the repo and known_hosts instead")
 	rf.add(cmd)
 	return cmd
 }
@@ -355,4 +370,56 @@ func printTemplates(w io.Writer, res []proxmox.TemplateResult) {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", r.Node, r.VMID, r.Name, r.Status)
 	}
 	tw.Flush()
+}
+
+// printTimings lists where a run's time went: careen's steps, then the
+// commands (identical ones added up), each slower than a tenth of a second.
+// A command inside a step is counted in both.
+func printTimings(w io.Writer, t *execx.Timings) {
+	const floor = 100 * time.Millisecond
+	type total struct {
+		what string
+		n    int
+		d    time.Duration
+	}
+	var steps []execx.Timing
+	var cmds []*total
+	byName := map[string]*total{}
+	omitted := 0
+	for _, it := range t.Items() {
+		switch {
+		case it.Duration < floor:
+			omitted++
+		case it.Phase:
+			steps = append(steps, it)
+		default:
+			c := byName[it.What]
+			if c == nil {
+				c = &total{what: it.What}
+				byName[it.What] = c
+				cmds = append(cmds, c)
+			}
+			c.n++
+			c.d += it.Duration
+		}
+	}
+	if len(steps) > 0 {
+		fmt.Fprintln(w, "\nSteps:")
+		for _, it := range steps {
+			fmt.Fprintf(w, "  %7s  %s\n", it.Duration.Round(100*time.Millisecond), it.What)
+		}
+	}
+	if len(cmds) > 0 {
+		fmt.Fprintln(w, "\nCommands:")
+		for _, c := range cmds {
+			times := ""
+			if c.n > 1 {
+				times = fmt.Sprintf("  (%d times)", c.n)
+			}
+			fmt.Fprintf(w, "  %7s  %s%s\n", c.d.Round(100*time.Millisecond), execx.Tail(c.what, 1), times)
+		}
+	}
+	if omitted > 0 {
+		fmt.Fprintf(w, "\n(%d faster than %s, or answered from the cache, not listed)\n", omitted, floor)
+	}
 }

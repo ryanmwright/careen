@@ -186,3 +186,31 @@ func TestAtRevision(t *testing.T) {
 		t.Errorf("unlocked: %q", got)
 	}
 }
+
+func TestCacheEvals(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	calls := 0
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		return []byte(`{"n":1}`), nil
+	}
+	cached := CacheEvals("git+https://git.example/repo?rev=abc", run)
+	ctx := context.Background()
+	for range 2 {
+		out, err := cached(ctx, "nix", "eval", "--json", "git+https://git.example/repo?rev=abc#pve")
+		if err != nil || string(out) != `{"n":1}` {
+			t.Fatalf("out = %q, err = %v", out, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("evaluated %d times, want 1", calls)
+	}
+	// Other flakes, other commands and a dirty tree aren't cached.
+	cached(ctx, "nix", "eval", "--json", "git+https://git.example/repo?rev=def#pve")
+	cached(ctx, "nix", "build", "git+https://git.example/repo?rev=abc#pve")
+	CacheEvals("", run)(ctx, "nix", "eval", "--json", "flake#pve")
+	CacheEvals("", run)(ctx, "nix", "eval", "--json", "flake#pve")
+	if calls != 5 {
+		t.Errorf("calls = %d, want 5", calls)
+	}
+}

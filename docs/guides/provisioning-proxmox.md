@@ -56,7 +56,7 @@ pve = {
 | `templateHost` | The flake host whose Proxmox image every VM is cloned from (default `pve-base`). |
 | `nodes` | Each Proxmox node: `address`, where careen SSHes as root, and `template`, the VM ID of that node's template. |
 | `token` | Where the API token is in sops: `file` (relative to the flake) and `key`. Encrypt it to the master key only. |
-| `hosts` | Each VM: the `node` it runs on and its `vmid`, plus everything `pve-tofu` renders (cores, memory, disks, network, cloud-init IP). |
+| `hosts` | Each VM: the `node` it runs on and its `vmid`, plus everything `pve-tofu` renders (cores, memory, disks, network, cloud-init IP). Optionally `guestAgent`, true when the host's own NixOS config runs `qemu-guest-agent` (see [Without a guest agent](#without-a-guest-agent)). |
 
 **careen never lets OpenTofu reboot a VM.** Next to the rendered config it writes an OpenTofu
 override file, `careen_override.tf.json`, that sets `reboot_after_update = false` on every VM,
@@ -109,6 +109,31 @@ For each host, `careen up`:
 
 Every step is skipped when already done, so rerunning `careen up` after a failure continues where
 it stopped.
+
+`careen up` also says which commit a remote flake reference (no explicit revision) resolved to,
+and with `--repo` or `CAREEN_REPO` set warns when your checkout has commits that commit lacks,
+since careen builds what the remote has. Each step of a host says how long it took, and
+`--timings` ends the run (or `--plan`) with a list of the steps and of every `nix`, `tofu` and `ssh`
+command that took over a tenth of a second (repeats added up), to show where a slow `up` went.
+
+### Without a guest agent
+
+A new VM boots the generic image, which has the agent, so careen always waits for it (up to ten
+minutes, saying every 15 seconds how long is left). A VM that already exists runs its own system,
+and a deploy from a flake that doesn't enable `services.qemuGuest` removes the agent. Waiting for
+an agent nothing can start would never end, so for an existing VM:
+
+- If `hosts.<name>.guestAgent` is `false`, or you pass `--no-agent-wait`, careen doesn't wait. It
+  says so, warns that Proxmox can't show the VM's IP without the agent, and uses the address from
+  the inventory.
+- Otherwise (`true`, or a flake that doesn't set it) it waits one minute. If the agent still
+  doesn't answer, careen looks over SSH. A system without the agent unit is reported and the
+  deploy continues, since the deploy is the fix. A stopped unit is started.
+
+The agent is also how careen learns a VM's host key without trusting the network. Without it,
+careen accepts only a key it already knows: the host's pre-generated key in the repository or its
+`known_hosts` entry. If sshd serves another key, or SSH is unreachable, `careen up` stops with an
+error rather than trust whatever answers.
 
 ## Tearing down
 
