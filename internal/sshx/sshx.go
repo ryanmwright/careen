@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ryanmwright/careen/internal/execx"
@@ -72,8 +73,38 @@ func (r Remote) SSHArgs(remoteCmd string) []string {
 	return append(args, "--", r.Address, remoteCmd)
 }
 
+var observer atomic.Pointer[func(what string, d time.Duration)]
+
+// Observe makes every Remote.Run report how long it took to f, named by the
+// host and the script's first command. Call it before running anything;
+// nil stops it.
+func Observe(f func(what string, d time.Duration)) {
+	if f == nil {
+		observer.Store(nil)
+		return
+	}
+	observer.Store(&f)
+}
+
+// label names a script by its first command, skipping comments and `set`.
+func label(r Remote, script string) string {
+	for _, l := range strings.Split(script, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") && !strings.HasPrefix(l, "set ") {
+			if len(l) > 50 {
+				l = l[:50] + "…"
+			}
+			return "ssh " + r.Address + ": " + l
+		}
+	}
+	return "ssh " + r.Address
+}
+
 // Run pipes script to `sh -s` on the host.
 func (r Remote) Run(ctx context.Context, script string, args ...string) ([]byte, error) {
+	if f := observer.Load(); f != nil {
+		start := time.Now()
+		defer func() { (*f)(label(r, script), time.Since(start)) }()
+	}
 	remote := "sh -s --"
 	for _, a := range args {
 		remote += " " + Quote(a)

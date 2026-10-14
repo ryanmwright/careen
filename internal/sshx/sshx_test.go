@@ -50,3 +50,14 @@ func TestCapture(t *testing.T) {
 		t.Errorf("out = %+v (stdout %q)", out, out.Stdout)
 	}
 }
+
+func TestLabel(t *testing.T) {
+	r := Remote{Address: "10.0.0.21"}
+	script := "# comment\nset -e\n\nsystemctl is-system-running\necho done\n"
+	if got, want := label(r, script), "ssh 10.0.0.21: systemctl is-system-running"; got != want {
+		t.Errorf("label = %q, want %q", got, want)
+	}
+	if got := label(r, "set -e\n"); got != "ssh 10.0.0.21" {
+		t.Errorf("label of an empty script = %q", got)
+	}
+}
