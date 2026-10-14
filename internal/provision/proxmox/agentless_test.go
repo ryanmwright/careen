@@ -56,10 +56,48 @@ func TestEnsureConfigWithoutAgentUsesSSH(t *testing.T) {
 	if err != "" || key != bootKey {
 		t.Fatalf("key = %q, err = %q", key, err)
 	}
-	for _, want := range []string{"node1's config has no guest agent; using SSH instead", "can't show VM 131's IP"} {
-		if !strings.Contains(said, want) {
-			t.Errorf("progress lacks %q:\n%s", want, said)
+	if !strings.Contains(said, "node1's config doesn't run the QEMU guest agent; checking its SSH key") || strings.Contains(said, "waiting") {
+		t.Errorf("progress:\n%s", said)
+	}
+}
+
+// Without guestAgent in the pve entry, careen reads the host's own config.
+func TestEnsureReadsQemuGuestFromConfig(t *testing.T) {
+	f := &fakeEnv{showJSON: noChange, qemuGuest: "false"}
+	p := f.provisioner(t, nil)
+	p.TrustedKeys = func(inventory.Host) []string { return []string{bootKey} }
+	var said []string
+	m, err := p.Ensure(context.Background(), node1, func(_, _, msg string) { said = append(said, msg) })
+	if err != nil || m.BootHostKey != bootKey {
+		t.Fatalf("m = %+v, err = %v", m, err)
+	}
+	if !strings.Contains(strings.Join(said, "\n"), "doesn't run the QEMU guest agent") {
+		t.Errorf("progress:\n%s", strings.Join(said, "\n"))
+	}
+	if !f.has("nix eval --json flake?rev=abc#nixosConfigurations.node1.config.services.qemuGuest.enable") {
+		t.Errorf("calls: %v", f.calls)
+	}
+	// Asked once per run, however often it's needed.
+	n := 0
+	for _, c := range f.calls {
+		if strings.Contains(c, "qemuGuest") {
+			n++
 		}
+	}
+	if n != 1 {
+		t.Errorf("evaluated services.qemuGuest.enable %d times", n)
+	}
+}
+
+// A pve entry's guestAgent wins over the config, without an eval.
+func TestHasAgentPrefersGuestAgent(t *testing.T) {
+	f := &fakeEnv{guestAgent: ptr(true), qemuGuest: "false"}
+	p := f.provisioner(t, nil)
+	if _, err := p.Config(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !p.hasAgent(context.Background(), node1) || f.has("qemuGuest") {
+		t.Errorf("hasAgent ignored guestAgent; calls: %v", f.calls)
 	}
 }
 
@@ -119,7 +157,7 @@ func TestEnsureSilentAgentMissingUnit(t *testing.T) {
 	if err != "" || key != bootKey {
 		t.Fatalf("key = %q, err = %q", key, err)
 	}
-	if !strings.Contains(said, "the deployed generation has no guest agent (it was overwritten by a deploy from a flake without it)") {
+	if !strings.Contains(said, "the running system has no guest agent, though node1's config has one") {
 		t.Errorf("progress:\n%s", said)
 	}
 	if !strings.Contains(said, "left)") {

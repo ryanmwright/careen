@@ -1,6 +1,7 @@
 package proxmox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -70,13 +71,13 @@ func TestPendingRestartAndRestart(t *testing.T) {
 	}
 }
 
-func TestNoRebootOverride(t *testing.T) {
+func TestOverrideNoReboot(t *testing.T) {
 	cfg := `{"resource":{
 		"proxmox_virtual_environment_vm":{
 			"cp1":{"name":"cp1","reboot_after_update":true},
 			"cp2":{"name":"cp2"}},
 		"proxmox_virtual_environment_pool":{"cluster":{"pool_id":"cluster"}}}}`
-	out, err := noRebootOverride([]byte(cfg))
+	out, err := override([]byte(cfg), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,11 +98,80 @@ func TestNoRebootOverride(t *testing.T) {
 	}
 
 	// No VMs: an empty override, which OpenTofu accepts.
-	if out, err := noRebootOverride([]byte(`{"resource":{}}`)); err != nil || strings.TrimSpace(string(out)) != "{}" {
+	if out, err := override([]byte(`{"resource":{}}`), nil); err != nil || strings.TrimSpace(string(out)) != "{}" {
 		t.Errorf("no VMs: %s, %v", out, err)
 	}
-	if _, err := noRebootOverride([]byte("not json")); err == nil {
+	if _, err := override([]byte("not json"), nil); err == nil {
 		t.Error("expected an error for a config that isn't JSON")
+	}
+}
+
+func TestOverrideAgentless(t *testing.T) {
+	cfg := `{"resource":{"proxmox_virtual_environment_vm":{
+		"web1":{"agent":{"enabled":true,"timeout":"1m"}},
+		"db1":{"agent":[{"enabled":true,"timeout":"1m"}]},
+		"mgr":{"agent":{"enabled":false}},
+		"app1":{"agent":{"enabled":true,"timeout":"1m"}}}}}`
+	out, err := override([]byte(cfg), []string{"web1", "db1", "mgr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Resource map[string]map[string]map[string]json.RawMessage `json:"resource"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	vms := got.Resource[Resource]
+	compact := func(raw json.RawMessage) string {
+		var b bytes.Buffer
+		json.Compact(&b, raw)
+		return b.String()
+	}
+	// The whole block is copied, since an override replaces it.
+	if a := compact(vms["web1"]["agent"]); a != `{"enabled":true,"timeout":"1s"}` {
+		t.Errorf("web1 agent = %s", a)
+	}
+	if a := compact(vms["db1"]["agent"]); a != `[{"enabled":true,"timeout":"1s"}]` {
+		t.Errorf("db1 agent = %s", a)
+	}
+	// No enabled agent to wait on, or a host that has one: left alone.
+	for _, name := range []string{"mgr", "app1"} {
+		if _, ok := vms[name]["agent"]; ok {
+			t.Errorf("%s: agent overridden: %s", name, out)
+		}
+		if string(vms[name]["reboot_after_update"]) != "false" {
+			t.Errorf("%s: no reboot_after_update override", name)
+		}
+	}
+}
+
+// A plan writes the override for its own hosts.
+func TestPlanOverridesAgentlessHost(t *testing.T) {
+	f := &fakeEnv{showJSON: noChange, guestAgent: ptr(false), tfjson: `{"resource":{"proxmox_virtual_environment_vm":{"node1":{"agent":{"enabled":true}}}}}`}
+	p := f.provisioner(t, nil)
+	if _, err := p.Plan(context.Background(), []inventory.Host{{Name: "node1"}}, false); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(p.Dir, overrideFile))
+	if err != nil || !strings.Contains(string(b), `"timeout": "1s"`) {
+		t.Errorf("override = %s, %v", b, err)
+	}
+}
+
+func TestRestartWithoutAgentPowerCycles(t *testing.T) {
+	f := &fakeEnv{guestAgent: ptr(false)}
+	p := f.provisioner(t, nil)
+	if err := p.Restart(context.Background(), inventory.Host{Name: "node1"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.has("qm reboot") {
+		t.Errorf("qm reboot needs the agent: %v", f.calls)
+	}
+	for _, want := range []string{"-- 10.0.0.1 pvesh create /nodes/pve1/qemu/131/monitor --command system_powerdown", "qm status 131", "exec qm start 131"} {
+		if !f.has(want) {
+			t.Errorf("missing %q in %v", want, f.calls)
+		}
 	}
 }
 
