@@ -298,6 +298,8 @@ type UpOptions struct {
 	KnownHosts string
 	// NoAgentWait doesn't wait for the guest agent of a VM that exists.
 	NoAgentWait bool
+	// Timings, when set, gets how long each step of each host took.
+	Timings *execx.Timings
 }
 
 // Up brings each host up in turn, stopping at the first failure:
@@ -412,8 +414,10 @@ func ReportFlake(ctx context.Context, w io.Writer, f inventory.Flake, repoDir st
 }
 
 // took reports how long a step of a host's up took.
-func took(em *contract.Emitter, host, step string, start time.Time) {
-	em.Progress(host, step, "took %s", time.Since(start).Round(100*time.Millisecond))
+func took(em *contract.Emitter, t *execx.Timings, host, step string, start time.Time) {
+	d := time.Since(start)
+	t.AddPhase(host+": "+step, d)
+	em.Progress(host, step, "took %s", d.Round(100*time.Millisecond))
 }
 
 func upOne(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provisioners, h inventory.Host, kh string, keys map[string]string, o UpOptions) (MachineResult, error) {
@@ -428,7 +432,7 @@ func upOne(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provis
 	if err != nil {
 		return r, contract.Failed("provision", "%v", err)
 	}
-	took(em, h.Name, "provision", start)
+	took(em, o.Timings, h.Name, "provision", start)
 	if m.Created {
 		r.Machine = provision.Create
 	}
@@ -439,14 +443,14 @@ func upOne(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provis
 	if err != nil {
 		return r, err
 	}
-	took(em, h.Name, "hostkey", start)
+	took(em, o.Timings, h.Name, "hostkey", start)
 
 	start = time.Now()
 	first, err := firstDeploy(ctx, h, m)
 	if err != nil {
 		return r, contract.Failed("connect", "%v", err)
 	}
-	took(em, h.Name, "connect", start)
+	took(em, o.Timings, h.Name, "connect", start)
 	r.FirstDeploy = first
 	opts := o.Deploy
 	opts.Parallel = 1
@@ -465,7 +469,7 @@ func upOne(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provis
 	}
 	start = time.Now()
 	dd, err := Deploy(ctx, em, plan, nil)
-	took(em, h.Name, "deploy", start)
+	took(em, o.Timings, h.Name, "deploy", start)
 	if len(dd.Hosts) == 1 {
 		r.Deploy = &dd.Hosts[0]
 	}

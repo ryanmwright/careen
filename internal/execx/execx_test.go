@@ -1,8 +1,10 @@
 package execx
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 const nixUnfree = `error:
@@ -30,5 +32,23 @@ func TestSummaryPicksTheInnermostNixError(t *testing.T) {
 func TestSummaryWithoutNixError(t *testing.T) {
 	if got := Summary("one\ntwo\nthree\nfour\n"); got != "two; three; four" {
 		t.Errorf("summary = %q", got)
+	}
+}
+
+func TestTimings(t *testing.T) {
+	var tm *Timings
+	tm.Add("nil is fine", time.Second) // must not panic
+	if tm.Items() != nil {
+		t.Error("nil Timings has items")
+	}
+	tm = &Timings{}
+	run := tm.Wrap(func(context.Context, string, ...string) ([]byte, error) { return []byte("ok"), nil })
+	if out, err := run(context.Background(), "nix", "eval", "x#pve"); err != nil || string(out) != "ok" {
+		t.Fatalf("out = %q, err = %v", out, err)
+	}
+	tm.AddPhase("web1: deploy", time.Second)
+	items := tm.Items()
+	if len(items) != 2 || items[0].What != "nix eval x#pve" || items[0].Phase || !items[1].Phase {
+		t.Errorf("items = %+v", items)
 	}
 }

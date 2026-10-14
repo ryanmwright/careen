@@ -84,6 +84,22 @@ func RunCmd(ctx context.Context, dir string, env []string, stdin io.Reader, name
 	return out, nil
 }
 
+// TimedCmd is c recording how long each call takes in t. A call is named by
+// its program and arguments, except ssh, whose arguments are long and
+// mostly options.
+func TimedCmd(t *execx.Timings, c Cmd) Cmd {
+	return func(ctx context.Context, dir string, env []string, stdin io.Reader, name string, args ...string) ([]byte, error) {
+		start := time.Now()
+		out, err := c(ctx, dir, env, stdin, name, args...)
+		what := filepath.Base(name)
+		if what != "ssh" {
+			what += " " + strings.Join(args, " ")
+		}
+		t.Add(what, time.Since(start))
+		return out, err
+	}
+}
+
 func firstArg(args []string) string {
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") {

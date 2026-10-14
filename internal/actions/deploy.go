@@ -36,6 +36,8 @@ type DeployOptions struct {
 	RebootTimeout time.Duration
 	// Rolling is how --reboot runs each host's reboot hooks.
 	Rolling Rolling
+	// Run runs the build's nix commands; execx.Run when nil.
+	Run execx.Runner
 }
 
 // DeployPlan is what Deploy will do; its JSON form is careen.deploy.plan/v1.
@@ -167,7 +169,7 @@ type DeployDone struct {
 func Deploy(ctx context.Context, em *contract.Emitter, p *DeployPlan, onDone func(DeployDone)) (DeployDone, error) {
 	em.Started("deploy", p)
 	opts := activate.Options{Operation: "switch", Watchdog: p.opts.Watchdog, HealthTimeout: p.opts.HealthTimeout, Settle: p.opts.Settle}
-	done := DeployDone{Hosts: deployAll(ctx, em, p.ref, p.targets, opts, p.opts.Parallel)}
+	done := DeployDone{Hosts: deployAll(ctx, em, p.ref, p.targets, opts, p.opts.Parallel, p.opts.Run)}
 	finish := func() {
 		em.Done(done)
 		if onDone != nil {
@@ -221,7 +223,7 @@ func Deploy(ctx context.Context, em *contract.Emitter, p *DeployPlan, onDone fun
 
 // deployAll builds and switches hosts, parallel except the local machine,
 // which goes alone at the end.
-func deployAll(ctx context.Context, em *contract.Emitter, ref string, hosts []inventory.Host, opts activate.Options, parallel int) []DeployResult {
+func deployAll(ctx context.Context, em *contract.Emitter, ref string, hosts []inventory.Host, opts activate.Options, parallel int, run execx.Runner) []DeployResult {
 	results := make([]DeployResult, len(hosts))
 	sem := make(chan struct{}, max(parallel, 1))
 	var wg sync.WaitGroup
@@ -232,19 +234,19 @@ func deployAll(ctx context.Context, em *contract.Emitter, ref string, hosts []in
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = deployOne(ctx, em, ref, h, opts)
+			results[i] = deployOne(ctx, em, ref, h, opts, run)
 		})
 	}
 	wg.Wait()
 	for i, h := range hosts {
 		if IsLocal(h) {
-			results[i] = deployOne(ctx, em, ref, h, opts)
+			results[i] = deployOne(ctx, em, ref, h, opts, run)
 		}
 	}
 	return results
 }
 
-func deployOne(ctx context.Context, em *contract.Emitter, ref string, h inventory.Host, opts activate.Options) DeployResult {
+func deployOne(ctx context.Context, em *contract.Emitter, ref string, h inventory.Host, opts activate.Options, run execx.Runner) DeployResult {
 	res := DeployResult{Host: h.Name, RebootPending: []string{}}
 	progress := func(step, msg string) { em.Progress(h.Name, step, "%s", msg) }
 	fail := func(step string, err error) DeployResult {
@@ -262,7 +264,10 @@ func deployOne(ctx context.Context, em *contract.Emitter, ref string, h inventor
 	if !IsLocal(h) {
 		job.Dest = build.HostStore(h)
 	}
-	path, err := build.Build(ctx, execx.Run, ref, job, progress)
+	if run == nil {
+		run = execx.Run
+	}
+	path, err := build.Build(ctx, run, ref, job, progress)
 	if err != nil {
 		return fail("build", err)
 	}

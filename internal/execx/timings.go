@@ -2,6 +2,7 @@ package execx
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,9 @@ import (
 type Timing struct {
 	What     string
 	Duration time.Duration
+	// Phase marks a step of careen's own (a host's deploy, say) rather than
+	// one command; the commands it ran are counted again on their own.
+	Phase bool
 }
 
 // Timings records how long commands take, to show where a slow run went.
@@ -34,24 +38,28 @@ func (t *Timings) Wrap(run Runner) Runner {
 }
 
 // Add records a phase that took d.
-func (t *Timings) Add(what string, d time.Duration) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.items = append(t.items, Timing{what, d})
+func (t *Timings) Add(what string, d time.Duration) { t.add(Timing{What: what, Duration: d}) }
+
+// AddPhase records a step of careen's own that took d.
+func (t *Timings) AddPhase(what string, d time.Duration) {
+	t.add(Timing{What: what, Duration: d, Phase: true})
 }
 
-// Slow lists what took at least min, in the order it finished.
-func (t *Timings) Slow(min time.Duration) []Timing {
+func (t *Timings) add(it Timing) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.items = append(t.items, it)
+}
+
+// Items lists everything recorded, in the order it finished.
+func (t *Timings) Items() []Timing {
 	if t == nil {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	var out []Timing
-	for _, it := range t.items {
-		if it.Duration >= min {
-			out = append(out, it)
-		}
-	}
-	return out
+	return slices.Clone(t.items)
 }

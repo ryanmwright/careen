@@ -42,13 +42,14 @@ func machineSetup(ctx context.Context, g *globalFlags, all bool) (*inventory.Inv
 			return nil, repo.Settings{}, nil, sel, contract.Usage("no host in the fleet is provisioned by careen")
 		}
 	}
-	run := inventory.CacheEvals(inv.Flake.Locked, g.timings.Wrap(execx.Run))
+	run := g.timings.Wrap(inventory.CacheEvals(inv.Flake.Locked, execx.Run))
 	settings, err := repo.LoadSettings(ctx, run, inv.Flake.BuildRef())
 	if err != nil {
 		return nil, repo.Settings{}, nil, sel, contract.Failed("settings", "%v", err)
 	}
 	ps := actions.NewProvisioners(inv, decrypter(g))
 	ps.Proxmox().Run = run
+	ps.Proxmox().Cmd = proxmox.TimedCmd(g.timings, proxmox.RunCmd)
 	return inv, settings, ps, sel, nil
 }
 
@@ -61,9 +62,9 @@ func decrypter(g *globalFlags) *actions.Decrypter {
 
 func newUpCmd(g *globalFlags) *cobra.Command {
 	var (
-		all, planOnly, yes bool
-		opts               actions.UpOptions
-		rf                 rebootFlags
+		all, planOnly, yes, timings bool
+		opts                        actions.UpOptions
+		rf                          rebootFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -87,6 +88,10 @@ failure. --all is every host careen provisions.`,
 			if planOnly {
 				g.schema, g.onError = actions.UpPlanSchema, nil
 			}
+			if timings && !g.json {
+				defer printTimings(os.Stderr, g.timings)
+			}
+			opts.Timings, opts.Deploy.Run = g.timings, g.timings.Wrap(execx.Run)
 			inv, settings, ps, sel, err := machineSetup(ctx, g, all)
 			if err != nil {
 				return err
@@ -118,7 +123,6 @@ failure. --all is every host careen provisions.`,
 			done, err := actions.Up(ctx, em, plan, ps, opts)
 			if !g.json {
 				printMachineDone(out, done)
-				printSlow(out, g.timings)
 			}
 			return err
 		},
@@ -127,6 +131,7 @@ failure. --all is every host careen provisions.`,
 	f.BoolVar(&all, "all", false, "every host careen provisions")
 	f.BoolVar(&planOnly, "plan", false, "show what would be done and stop")
 	f.BoolVar(&yes, "yes", false, "don't ask for confirmation")
+	f.BoolVar(&timings, "timings", false, "afterwards, list how long each step and each nix and tofu command took")
 	f.BoolVar(&opts.Deploy.AllowDirty, "allow-dirty", false, "use a flake with uncommitted changes")
 	f.StringVar(&opts.Deploy.BuildOn, "build-on", "", "override where to build: local, remote or target")
 	f.StringVar(&opts.Deploy.Builder, "builder", "", "override the remote builder's store URI")
@@ -365,15 +370,36 @@ func printTemplates(w io.Writer, res []proxmox.TemplateResult) {
 	tw.Flush()
 }
 
-// printSlow lists the commands that took long, to show where a slow run
-// went.
-func printSlow(w io.Writer, t *execx.Timings) {
-	slow := t.Slow(2 * time.Second)
-	if len(slow) == 0 {
-		return
+// printTimings lists where a run's time went: careen's steps, then the
+// commands, each slower than a tenth of a second. A command inside a step is
+// counted in both.
+func printTimings(w io.Writer, t *execx.Timings) {
+	const floor = 100 * time.Millisecond
+	var steps, cmds []execx.Timing
+	omitted := 0
+	for _, it := range t.Items() {
+		switch {
+		case it.Duration < floor:
+			omitted++
+		case it.Phase:
+			steps = append(steps, it)
+		default:
+			cmds = append(cmds, it)
+		}
 	}
-	fmt.Fprintln(w, "\nSlow commands:")
-	for _, it := range slow {
-		fmt.Fprintf(w, "  %6s  %s\n", it.Duration.Round(100*time.Millisecond), execx.Tail(it.What, 1))
+	for _, g := range []struct {
+		title string
+		items []execx.Timing
+	}{{"Steps", steps}, {"Commands", cmds}} {
+		if len(g.items) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "\n%s:\n", g.title)
+		for _, it := range g.items {
+			fmt.Fprintf(w, "  %7s  %s\n", it.Duration.Round(100*time.Millisecond), execx.Tail(it.What, 1))
+		}
+	}
+	if omitted > 0 {
+		fmt.Fprintf(w, "\n(%d faster than %s, or answered from the cache, not listed)\n", omitted, floor)
 	}
 }

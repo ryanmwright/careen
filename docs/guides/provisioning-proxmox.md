@@ -112,8 +112,9 @@ it stopped.
 
 `careen up` also says which commit a remote flake reference (no explicit revision) resolved to,
 and with `--repo` or `CAREEN_REPO` set warns when your checkout has commits that commit lacks,
-since careen builds what the remote has. It ends with the commands that took more than two
-seconds, and each step of a host says how long it took.
+since careen builds what the remote has. Each step of a host says how long it took, and
+`--timings` ends the run (or `--plan`) with a list of the steps and of every `nix` and `tofu`
+command that took over a tenth of a second, to show where a slow `up` went.
 
 ### Without a guest agent
 
