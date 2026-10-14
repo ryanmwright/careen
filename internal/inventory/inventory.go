@@ -3,6 +3,7 @@
 package inventory
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -109,6 +110,11 @@ type Flake struct {
 	// Path is the flake's source in the local store, for reading files
 	// that sit next to it (the vulnix whitelist).
 	Path string `json:"-"`
+	// Remote is set when Ref names a repository on a server rather than a
+	// local checkout; Branch is the branch it names, empty for the
+	// server's default branch.
+	Remote bool   `json:"-"`
+	Branch string `json:"-"`
 }
 
 // BuildRef is the flake reference builds should use.
@@ -169,11 +175,26 @@ func Load(ctx context.Context, run execx.Runner, ref string, refresh bool) (*Inv
 		Path          string `json:"path"`
 		Revision      string `json:"revision"`
 		DirtyRevision string `json:"dirtyRevision"`
+		Original      struct {
+			Type string `json:"type"`
+			URL  string `json:"url"`
+			Ref  string `json:"ref"`
+		} `json:"original"`
+		Locked struct {
+			Ref string `json:"ref"`
+		} `json:"locked"`
 	}
 	if err := json.Unmarshal(metaOut, &meta); err != nil {
 		return nil, contract.Failed("inventory", "parsing flake metadata for %s: %v", ref, err)
 	}
 	inv := &Inventory{Flake: Flake{Ref: ref, Path: meta.Path}}
+	switch meta.Original.Type {
+	case "github", "gitlab", "sourcehut":
+		inv.Flake.Remote = true
+	case "git":
+		inv.Flake.Remote = !strings.HasPrefix(meta.Original.URL, "file:")
+	}
+	inv.Flake.Branch = strings.TrimPrefix(cmp.Or(meta.Original.Ref, meta.Locked.Ref), "refs/heads/")
 	locked := ""
 	switch {
 	case meta.Revision != "":
@@ -292,6 +313,32 @@ func readCache(locked string) ([]byte, bool) {
 	}
 	b, err := os.ReadFile(path)
 	return b, err == nil
+}
+
+// CacheEvals returns run with `nix eval` of anything in the locked flake
+// answered from the cache: a locked flake can't change, so evaluating its
+// `careen` or `pve` output again is wasted time. An empty locked (a dirty
+// tree) caches nothing.
+func CacheEvals(locked string, run execx.Runner) execx.Runner {
+	if locked == "" {
+		return run
+	}
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name != "nix" || len(args) == 0 || args[0] != "eval" || !strings.HasPrefix(args[len(args)-1], locked+"#") {
+			return run(ctx, name, args...)
+		}
+		path := cacheFile(strings.Join(args, " "), "eval-")
+		if path != "" {
+			if b, err := os.ReadFile(path); err == nil {
+				return b, nil
+			}
+		}
+		out, err := run(ctx, name, args...)
+		if err == nil {
+			writeCache(path, out)
+		}
+		return out, err
+	}
 }
 
 // writeCache is best effort: a failure only costs the next run an eval.

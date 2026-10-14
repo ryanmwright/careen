@@ -296,6 +296,8 @@ type UpOptions struct {
 	// KnownHosts is the known_hosts file up and down keep current;
 	// knownhosts.Default() when empty.
 	KnownHosts string
+	// NoAgentWait doesn't wait for the guest agent of a VM that exists.
+	NoAgentWait bool
 }
 
 // Up brings each host up in turn, stopping at the first failure:
@@ -312,6 +314,10 @@ func Up(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provision
 	kh := o.KnownHosts
 	if kh == "" {
 		kh = knownhosts.Default()
+	}
+	if px := ps.proxmox; px != nil {
+		px.NoAgentWait = o.NoAgentWait
+		px.TrustedKeys = func(h inventory.Host) []string { return trustedKeys(p, h, kh) }
 	}
 	done := MachineDone{Hosts: []MachineResult{}}
 	keys, err := prepareKeys(ctx, em, p, ps.dec)
@@ -367,6 +373,49 @@ func prepareKeys(ctx context.Context, em *contract.Emitter, p *MachinePlan, dec 
 	return keys, nil
 }
 
+// trustedKeys are the keys careen trusts for h without asking the machine:
+// its pre-generated key in the repo and its known_hosts entry.
+func trustedKeys(p *MachinePlan, h inventory.Host, kh string) []string {
+	keys := knownhosts.Keys(kh, h.Name, h.Address)
+	if file := filepath.Join(p.Flake.Path, p.settings.HostKeyFile(h.Name)); exists(file) {
+		if pub, err := sopsfile.Plain(file, repo.HostKeyPublic); err == nil {
+			keys = append(keys, pub)
+		}
+	}
+	return keys
+}
+
+// ReportFlake says on w which commit a remote flake reference resolved to,
+// and warns when the checkout at repoDir has commits that commit lacks:
+// careen builds what the remote has, so deploying then would use stale
+// state. A local flake needs neither.
+func ReportFlake(ctx context.Context, w io.Writer, f inventory.Flake, repoDir string) {
+	if !f.Remote || f.Revision == "" {
+		return
+	}
+	branch := f.Branch
+	if branch == "" {
+		branch = "its default branch"
+	}
+	fmt.Fprintf(w, "Flake %s is %s at %.12s\n", f.Ref, branch, f.Revision)
+	if repoDir == "" {
+		return
+	}
+	out, err := execx.Run(ctx, "git", "-C", repoDir, "rev-list", "--count", f.Revision+"..HEAD")
+	if err != nil {
+		fmt.Fprintf(w, "warning: %.12s isn't in %s, so careen can't tell whether it is behind your checkout; fetch there to compare\n", f.Revision, repoDir)
+		return
+	}
+	if n := strings.TrimSpace(string(out)); n != "0" {
+		fmt.Fprintf(w, "warning: %s has %s commit(s) that %.12s lacks; push them first, or this deploys stale state\n", repoDir, n, f.Revision)
+	}
+}
+
+// took reports how long a step of a host's up took.
+func took(em *contract.Emitter, host, step string, start time.Time) {
+	em.Progress(host, step, "took %s", time.Since(start).Round(100*time.Millisecond))
+}
+
 func upOne(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provisioners, h inventory.Host, kh string, keys map[string]string, o UpOptions) (MachineResult, error) {
 	r := MachineResult{Host: h.Name, Machine: provision.NoOp}
 	progress := func(host, step, msg string) { em.Progress(host, step, "%s", msg) }
@@ -374,24 +423,30 @@ func upOne(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provis
 	if err != nil {
 		return r, err
 	}
+	start := time.Now()
 	m, err := prov.Ensure(ctx, h, progress)
 	if err != nil {
 		return r, contract.Failed("provision", "%v", err)
 	}
+	took(em, h.Name, "provision", start)
 	if m.Created {
 		r.Machine = provision.Create
 	}
 
+	start = time.Now()
 	installed, err := installHostKey(ctx, em, p, ps.dec, h, m, kh, keys[h.Name])
 	r.KeyInstalled = installed
 	if err != nil {
 		return r, err
 	}
+	took(em, h.Name, "hostkey", start)
 
+	start = time.Now()
 	first, err := firstDeploy(ctx, h, m)
 	if err != nil {
 		return r, contract.Failed("connect", "%v", err)
 	}
+	took(em, h.Name, "connect", start)
 	r.FirstDeploy = first
 	opts := o.Deploy
 	opts.Parallel = 1
@@ -408,7 +463,9 @@ func upOne(ctx context.Context, em *contract.Emitter, p *MachinePlan, ps *Provis
 	if err != nil {
 		return r, err
 	}
+	start = time.Now()
 	dd, err := Deploy(ctx, em, plan, nil)
+	took(em, h.Name, "deploy", start)
 	if len(dd.Hosts) == 1 {
 		r.Deploy = &dd.Hosts[0]
 	}

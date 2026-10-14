@@ -68,6 +68,8 @@ type fakeEnv struct {
 	pending string
 	// tfjson is the rendered OpenTofu config; no resources when empty.
 	tfjson string
+	// guestAgent is the pve entry's guestAgent; nil leaves it out.
+	guestAgent *bool
 }
 
 func (f *fakeEnv) provisioner(t *testing.T, api *httptest.Server) *Proxmox {
@@ -80,7 +82,7 @@ func (f *fakeEnv) provisioner(t *testing.T, api *httptest.Server) *Proxmox {
 	os.WriteFile(filepath.Join(store, "config.tf.json"), []byte(tfjson), 0o644)
 	os.MkdirAll(filepath.Join(store, "tofu", "bin"), 0o755)
 	cfg := Config{Endpoint: "https://pve:8006/", Storage: "local-lvm", Nodes: map[string]Node{"pve1": {Address: "10.0.0.1", Template: 9000}},
-		Hosts: map[string]VM{"node1": {Node: "pve1", VMID: 131}}}
+		Hosts: map[string]VM{"node1": {Node: "pve1", VMID: 131, GuestAgent: f.guestAgent}}}
 	cfg.Token.File, cfg.Token.Key = "secrets/pve/secrets.yaml", "proxmox_api_token"
 	if api != nil {
 		cfg.Endpoint = api.URL

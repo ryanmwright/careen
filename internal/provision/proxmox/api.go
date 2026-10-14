@@ -21,6 +21,9 @@ type API struct {
 	Endpoint string // https://host:8006/
 	Token    string // user@realm!id=uuid
 	Client   *http.Client
+	// OnWait, when set, is told how long WaitHostKey has left and why the
+	// agent hasn't answered yet, every so often.
+	OnWait func(left time.Duration, last error)
 }
 
 // NewAPI talks to endpoint, accepting Proxmox's self-signed certificate
@@ -72,6 +75,9 @@ func (a *API) Reboot(ctx context.Context, node string, vmid int) error {
 // HostKeyPath is the key careen reads and replaces on a new VM.
 const HostKeyPath = "/etc/ssh/ssh_host_ed25519_key.pub"
 
+// waitNotice is how often WaitHostKey says it is still waiting.
+const waitNotice = 15 * time.Second
+
 // WaitHostKey waits until vmid's guest agent answers and the VM has an
 // ed25519 host key, and returns it as "ssh-ed25519 AAAA...". Answers that
 // mean "not yet" (the agent isn't running, the key isn't written) are
@@ -87,6 +93,8 @@ func (a *API) WaitHostKey(ctx context.Context, node string, vmid int, poll, time
 	defer cancel()
 	base := fmt.Sprintf("/nodes/%s/qemu/%d/agent", url.PathEscape(node), vmid)
 	var last error
+	deadline, _ := ctx.Deadline()
+	var told time.Time
 	for {
 		key, err := a.readHostKey(ctx, base)
 		if err == nil {
@@ -96,6 +104,10 @@ func (a *API) WaitHostKey(ctx context.Context, node string, vmid int, poll, time
 			return "", fmt.Errorf("reading VM %d's host key: %w (does the API token have VM.GuestAgent.Audit and VM.GuestAgent.FileRead?)", vmid, err)
 		}
 		last = err
+		if a.OnWait != nil && time.Since(told) >= waitNotice {
+			told = time.Now()
+			a.OnWait(time.Until(deadline), err)
+		}
 		select {
 		case <-ctx.Done():
 			return "", fmt.Errorf("VM %d's guest agent didn't report a host key within %s: %v", vmid, timeout, last)

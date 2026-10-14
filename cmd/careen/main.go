@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ryanmwright/careen/internal/contract"
+	"github.com/ryanmwright/careen/internal/execx"
 	"github.com/ryanmwright/careen/internal/inventory"
 )
 
@@ -26,6 +27,9 @@ type globalFlags struct {
 	only   []string
 	except []string
 	tags   []string
+
+	// timings records how long the commands a run starts take.
+	timings *execx.Timings
 
 	// schema names the running command's output, for the JSON error
 	// object if it fails.
@@ -41,7 +45,7 @@ func (g *globalFlags) selector() inventory.Selector {
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	g := &globalFlags{schema: "careen.error/v1"}
+	g := &globalFlags{schema: "careen.error/v1", timings: &execx.Timings{}}
 	err := newRootCmd(g).ExecuteContext(ctx)
 	stop()
 	if err == nil {

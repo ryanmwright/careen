@@ -27,7 +27,7 @@ func machineSetup(ctx context.Context, g *globalFlags, all bool) (*inventory.Inv
 	if !all && len(sel.Only) == 0 && len(sel.Tags) == 0 {
 		return nil, repo.Settings{}, nil, sel, contract.Usage("choose hosts with --all, --only or --tag")
 	}
-	inv, err := inventory.Load(ctx, execx.Run, g.flake, true)
+	inv, err := inventory.Load(ctx, g.timings.Wrap(execx.Run), g.flake, true)
 	if err != nil {
 		return nil, repo.Settings{}, nil, sel, err
 	}
@@ -42,11 +42,14 @@ func machineSetup(ctx context.Context, g *globalFlags, all bool) (*inventory.Inv
 			return nil, repo.Settings{}, nil, sel, contract.Usage("no host in the fleet is provisioned by careen")
 		}
 	}
-	settings, err := repo.LoadSettings(ctx, execx.Run, inv.Flake.BuildRef())
+	run := inventory.CacheEvals(inv.Flake.Locked, g.timings.Wrap(execx.Run))
+	settings, err := repo.LoadSettings(ctx, run, inv.Flake.BuildRef())
 	if err != nil {
 		return nil, repo.Settings{}, nil, sel, contract.Failed("settings", "%v", err)
 	}
-	return inv, settings, actions.NewProvisioners(inv, decrypter(g)), sel, nil
+	ps := actions.NewProvisioners(inv, decrypter(g))
+	ps.Proxmox().Run = run
+	return inv, settings, ps, sel, nil
 }
 
 // decrypter says on stderr (with a bell) when a master-key decryption is
@@ -88,6 +91,9 @@ failure. --all is every host careen provisions.`,
 			if err != nil {
 				return err
 			}
+			if !g.json {
+				actions.ReportFlake(ctx, os.Stderr, inv.Flake, g.repo)
+			}
 			plan, err := actions.PlanUp(ctx, inv, sel, ps, settings, opts.Deploy.AllowDirty)
 			if err != nil {
 				return err
@@ -112,6 +118,7 @@ failure. --all is every host careen provisions.`,
 			done, err := actions.Up(ctx, em, plan, ps, opts)
 			if !g.json {
 				printMachineDone(out, done)
+				printSlow(out, g.timings)
 			}
 			return err
 		},
@@ -125,6 +132,7 @@ failure. --all is every host careen provisions.`,
 	f.StringVar(&opts.Deploy.Builder, "builder", "", "override the remote builder's store URI")
 	f.DurationVar(&opts.Deploy.Watchdog, "rollback-after", 5*time.Minute, "a host rolls back by itself unless careen confirms it within this time (0 turns it off)")
 	f.DurationVar(&opts.Deploy.Settle, "settle", 10*time.Second, "wait this long after a switch before checking health")
+	f.BoolVar(&opts.NoAgentWait, "no-agent-wait", false, "for a VM that exists, skip waiting for its QEMU guest agent and check its SSH key against the repo and known_hosts instead")
 	rf.add(cmd)
 	return cmd
 }
@@ -355,4 +363,17 @@ func printTemplates(w io.Writer, res []proxmox.TemplateResult) {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", r.Node, r.VMID, r.Name, r.Status)
 	}
 	tw.Flush()
+}
+
+// printSlow lists the commands that took long, to show where a slow run
+// went.
+func printSlow(w io.Writer, t *execx.Timings) {
+	slow := t.Slow(2 * time.Second)
+	if len(slow) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nSlow commands:")
+	for _, it := range slow {
+		fmt.Fprintf(w, "  %6s  %s\n", it.Duration.Round(100*time.Millisecond), execx.Tail(it.What, 1))
+	}
 }

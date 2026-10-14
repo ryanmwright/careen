@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ import (
 	"github.com/ryanmwright/careen/internal/hostkey"
 	"github.com/ryanmwright/careen/internal/inventory"
 	"github.com/ryanmwright/careen/internal/provision"
+	"github.com/ryanmwright/careen/internal/sshx"
 )
 
 // Config is the flake's `pve` output.
@@ -58,6 +60,9 @@ type Node struct {
 type VM struct {
 	Node string `json:"node"`
 	VMID int    `json:"vmid"`
+	// GuestAgent says whether the host's own NixOS config runs the QEMU
+	// guest agent. Nil when the flake doesn't say (an older flake).
+	GuestAgent *bool `json:"guestAgent"`
 }
 
 // Cmd runs a program in dir with extra environment and optional stdin,
@@ -108,6 +113,13 @@ type Proxmox struct {
 	// StuckAfter is how long sshd may serve another key than the VM
 	// reports before careen reboots the VM once (default a minute).
 	StuckAfter time.Duration
+	// NoAgentWait skips waiting for the guest agent of a VM that already
+	// exists; its host key is then checked over SSH instead.
+	NoAgentWait bool
+	// TrustedKeys lists the keys careen already trusts for h, from outside
+	// the machine (its pre-generated key in the repo, its known_hosts
+	// entry). Without the guest agent, sshd's key must be one of them.
+	TrustedKeys func(h inventory.Host) []string
 
 	once  sync.Once
 	err   error
@@ -303,10 +315,12 @@ func (p *Proxmox) Destroy(ctx context.Context, hosts []inventory.Host, progress 
 var ErrReplace = errors.New("the plan replaces the VM, destroying its disks")
 
 func (p *Proxmox) Ensure(ctx context.Context, h inventory.Host, progress provision.Progress) (provision.Machine, error) {
+	start := time.Now()
 	pl, err := p.plan(ctx, []inventory.Host{h}, false)
 	if err != nil {
 		return provision.Machine{}, err
 	}
+	progress(h.Name, "provision", fmt.Sprintf("planned in %s", time.Since(start).Round(100*time.Millisecond)))
 	created := false
 	for _, c := range pl.Changes {
 		switch c.Action {
@@ -328,6 +342,26 @@ func (p *Proxmox) Ensure(ctx context.Context, h inventory.Host, progress provisi
 	}
 
 	vm := p.cfg.Hosts[h.Name]
+	if !created {
+		switch {
+		case p.NoAgentWait:
+			progress(h.Name, "provision", "not waiting for the guest agent (--no-agent-wait); using SSH instead")
+			return p.overSSH(ctx, h, vm, progress)
+		case vm.GuestAgent != nil && !*vm.GuestAgent:
+			progress(h.Name, "provision", h.Name+"'s config has no guest agent; using SSH instead")
+			return p.overSSH(ctx, h, vm, progress)
+		}
+	}
+	// A new VM boots the template, which has an agent whatever the host's
+	// config says, and its first boot is slow; an existing one answers
+	// quickly or its agent is gone.
+	timeout := p.AgentTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+		if !created {
+			timeout = time.Minute
+		}
+	}
 	tok, err := p.apiToken(ctx)
 	if err != nil {
 		return provision.Machine{}, err
@@ -336,17 +370,125 @@ func (p *Proxmox) Ensure(ctx context.Context, h inventory.Host, progress provisi
 	if newAPI == nil {
 		newAPI = NewAPI
 	}
-	progress(h.Name, "provision", fmt.Sprintf("waiting for VM %d's guest agent", vm.VMID))
 	api := newAPI(p.cfg.Endpoint, tok)
-	key, err := api.WaitHostKey(ctx, vm.Node, vm.VMID, p.Poll, p.AgentTimeout)
+	api.OnWait = func(left time.Duration, last error) {
+		progress(h.Name, "provision", fmt.Sprintf("waiting for VM %d's guest agent to report its host key (%s left): %s", vm.VMID, left.Round(time.Second), execx.Tail(last.Error(), 1)))
+	}
+	key, err := api.WaitHostKey(ctx, vm.Node, vm.VMID, p.Poll, timeout)
 	if err != nil {
-		return provision.Machine{}, fmt.Errorf("%s: %w", h.Name, err)
+		var se *StatusError
+		if created || ctx.Err() != nil || (errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden)) {
+			return provision.Machine{}, fmt.Errorf("%s: %w", h.Name, err)
+		}
+		return p.agentSilent(ctx, api, h, vm, err, progress)
 	}
 	key, err = p.settledKey(ctx, api, h, vm, key, progress)
 	if err != nil {
 		return provision.Machine{}, fmt.Errorf("%s: %w", h.Name, err)
 	}
 	return provision.Machine{Address: h.Address, BootHostKey: key, Created: created}, nil
+}
+
+// overSSH is Ensure for an existing VM without its guest agent: the key
+// sshd serves must be one careen already trusts (see verifiedKey), and it
+// stands in for the key the agent would have read.
+func (p *Proxmox) overSSH(ctx context.Context, h inventory.Host, vm VM, progress provision.Progress) (provision.Machine, error) {
+	progress(h.Name, "provision", fmt.Sprintf("warning: without the guest agent Proxmox can't show VM %d's IP; careen uses %s from the inventory", vm.VMID, h.Address))
+	key, err := p.verifiedKey(ctx, h)
+	if err != nil {
+		return provision.Machine{}, fmt.Errorf("%s: no guest agent to ask, and %w", h.Name, err)
+	}
+	return provision.Machine{Address: h.Address, BootHostKey: key}, nil
+}
+
+// agentSilent handles an existing VM whose agent didn't answer in time,
+// finding out why over SSH. A deployed system without the agent unit is the
+// case the next deploy fixes, so it continues; a stopped unit is started
+// (it is device-triggered and may not start after a switch).
+func (p *Proxmox) agentSilent(ctx context.Context, api *API, h inventory.Host, vm VM, waitErr error, progress provision.Progress) (provision.Machine, error) {
+	progress(h.Name, "provision", fmt.Sprintf("VM %d's guest agent didn't answer; checking %s over SSH", vm.VMID, h.Address))
+	key, err := p.verifiedKey(ctx, h)
+	if err != nil {
+		return provision.Machine{}, fmt.Errorf("%s: %v, and %w", h.Name, waitErr, err)
+	}
+	m := provision.Machine{Address: h.Address, BootHostKey: key}
+	const probe = `if systemctl cat qemu-guest-agent.service >/dev/null 2>&1; then systemctl is-active qemu-guest-agent.service; else echo missing; fi; true`
+	out, err := p.sshPinned(ctx, h, key, "sh -c "+sshx.Quote(probe))
+	if err != nil {
+		return provision.Machine{}, fmt.Errorf("%s: %v, and checking its agent over SSH failed: %w", h.Name, waitErr, err)
+	}
+	switch state := strings.TrimSpace(string(out)); state {
+	case "missing":
+		progress(h.Name, "provision", "warning: the deployed generation has no guest agent (it was overwritten by a deploy from a flake without it); continuing over SSH, since the deploy brings it back")
+		return m, nil
+	case "active":
+		return provision.Machine{}, fmt.Errorf("%s: the guest agent runs in the VM but Proxmox can't reach it (is the agent enabled on VM %d?): %v", h.Name, vm.VMID, waitErr)
+	default:
+		progress(h.Name, "provision", fmt.Sprintf("the guest agent is %s; starting it", state))
+		if _, err := p.sshPinned(ctx, h, key, "sudo systemctl start qemu-guest-agent.service"); err != nil {
+			return provision.Machine{}, fmt.Errorf("%s: starting its guest agent: %w", h.Name, err)
+		}
+		after := 30 * time.Second
+		if p.AgentTimeout > 0 && p.AgentTimeout < after {
+			after = p.AgentTimeout
+		}
+		if k, err := api.WaitHostKey(ctx, vm.Node, vm.VMID, p.Poll, after); err == nil {
+			m.BootHostKey = k
+		} else {
+			progress(h.Name, "provision", "warning: the guest agent was started but Proxmox still can't reach it; continuing over SSH")
+		}
+		return m, nil
+	}
+}
+
+// verifiedKey reads the key h's sshd serves and returns it if it is one
+// careen trusts without the guest agent (TrustedKeys). Anything else fails:
+// accepting whatever answers would be trust on first use.
+func (p *Proxmox) verifiedKey(ctx context.Context, h inventory.Host) (string, error) {
+	scan := p.Scan
+	if scan == nil {
+		scan = agekey.ScanLine
+	}
+	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	live, err := scan(sctx, h.Address, 0)
+	if err != nil {
+		return "", fmt.Errorf("SSH on %s is unreachable: %w", h.Address, err)
+	}
+	if p.TrustedKeys != nil {
+		for _, k := range p.TrustedKeys(h) {
+			if hostkey.SameKey(live, k) {
+				bare, err := hostkey.Bare(live)
+				if err != nil {
+					return "", err
+				}
+				return bare, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("can't verify the SSH key %s serves: it is neither %s's pre-generated key in the repo nor its entry in known_hosts; start the guest agent in the VM, or put its key in known_hosts if you know it", h.Address, h.Name)
+}
+
+// sshPinned runs a command on h, over a connection pinned to
+// key alone.
+func (p *Proxmox) sshPinned(ctx context.Context, h inventory.Host, key, remote string) ([]byte, error) {
+	bare, err := hostkey.Bare(key)
+	if err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp("", "careen-known-hosts-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	fmt.Fprintf(tmp, "%s %s\n", h.Address, bare)
+	tmp.Close()
+	r := sshx.Remote{User: h.User, Address: h.Address, NoMaster: true, ConnectTimeout: 15 * time.Second, Args: []string{
+		"-o", "UserKnownHostsFile=" + tmp.Name(),
+		"-o", "GlobalKnownHostsFile=/dev/null",
+		"-o", "StrictHostKeyChecking=yes",
+	}}
+	return p.Cmd(ctx, "", nil, nil, "ssh", r.SSHArgs(remote)...)
 }
 
 // settledKey waits until the key read through the guest agent is the one
