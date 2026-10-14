@@ -56,7 +56,7 @@ pve = {
 | `templateHost` | The flake host whose Proxmox image every VM is cloned from (default `pve-base`). |
 | `nodes` | Each Proxmox node: `address`, where careen SSHes as root, and `template`, the VM ID of that node's template. |
 | `token` | Where the API token is in sops: `file` (relative to the flake) and `key`. Encrypt it to the master key only. |
-| `hosts` | Each VM: the `node` it runs on and its `vmid`, plus everything `pve-tofu` renders (cores, memory, disks, network, cloud-init IP). Optionally `guestAgent`, true when the host's own NixOS config runs `qemu-guest-agent` (see [Without a guest agent](#without-a-guest-agent)). |
+| `hosts` | Each VM: the `node` it runs on and its `vmid`, plus everything `pve-tofu` renders (cores, memory, disks, network, cloud-init IP). Optionally `guestAgent`, true when the host's own NixOS config runs `qemu-guest-agent`; careen reads the host's `services.qemuGuest.enable` when it's not set (see [Without a guest agent](#without-a-guest-agent)). |
 
 **careen never lets OpenTofu reboot a VM.** Next to the rendered config it writes an OpenTofu
 override file, `careen_override.tf.json`, that sets `reboot_after_update = false` on every VM,
@@ -118,17 +118,32 @@ command that took over a tenth of a second (repeats added up), to show where a s
 
 ### Without a guest agent
 
-A new VM boots the generic image, which has the agent, so careen always waits for it (up to ten
-minutes, saying every 15 seconds how long is left). A VM that already exists runs its own system,
-and a deploy from a flake that doesn't enable `services.qemuGuest` removes the agent. Waiting for
-an agent nothing can start would never end, so for an existing VM:
+A host's own NixOS config doesn't have to run the QEMU guest agent. careen finds out which hosts
+don't from `hosts.<name>.guestAgent`, or when that isn't set, from the host's
+`services.qemuGuest.enable` (evaluated once per commit). Such a host costs no waiting:
 
-- If `hosts.<name>.guestAgent` is `false`, or you pass `--no-agent-wait`, careen doesn't wait. It
-  says so, warns that Proxmox can't show the VM's IP without the agent, and uses the address from
-  the inventory.
-- Otherwise (`true`, or a flake that doesn't set it) it waits one minute. If the agent still
-  doesn't answer, careen looks over SSH. A system without the agent unit is reported and the
-  deploy continues, since the deploy is the fix. A stopped unit is started.
+- `tofu plan` doesn't wait for its agent. With an agent enabled in `pve-tofu`, the provider reads
+  each VM's IPs from it on every plan, and waits out `agent.timeout` when it doesn't answer. For
+  a host without one, careen's own override (`careen_override.tf.json`) shortens `agent.timeout`
+  to a second, which the provider only warns about. The agent stays enabled, since a new VM needs
+  it. The provider reads the timeout from its state, so the first `up` after this still waits
+  once and updates the VM in place (an OpenTofu setting only; nothing changes in Proxmox).
+- A new VM boots the generic image, which has the agent, so careen waits for it (up to ten
+  minutes, saying every 15 seconds how long is left) and reads the first host key through it.
+- For a VM that exists, careen says the host's config doesn't run the agent and doesn't wait for
+  one. `--no-agent-wait` does the same for any host.
+- A restart for pending hardware changes (see [Reboots](reboots.md#proxmox-hardware-changes))
+  powers the VM off by ACPI and starts it again, since `qm reboot` goes through the agent. A
+  shutdown from the Proxmox web UI or of the node does too, so it hangs until Proxmox gives up;
+  stop the VM there instead.
+
+A host whose config runs the agent but whose running system doesn't, because it was deployed
+from an older commit, is waited for one minute. When the agent still doesn't answer, careen
+looks over SSH: a system without the agent unit is reported and the deploy, which brings the
+agent back, continues. A stopped unit is started.
+
+While a plan runs, careen says so every 15 seconds, including the plan behind the summary that
+`careen up` shows before asking.
 
 The agent is also how careen learns a VM's host key without trusting the network. Without it,
 careen accepts only a key it already knows: the host's pre-generated key in the repository or its

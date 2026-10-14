@@ -119,7 +119,9 @@ Proxmox node for pending changes, over SSH as root:
 
 - A VM with pending changes needs a reboot with the reason `hardware`.
 - careen restarts it with `qm reboot` on its node, which shuts it down and starts it with the new
-  configuration, instead of rebooting it over SSH.
+  configuration, instead of rebooting it over SSH. A host whose config doesn't run the guest
+  agent gets an ACPI power off from its node instead (`qm reboot` would wait on the agent), and is
+  started once it has stopped, within three minutes.
 - Everything else is the same: one at a time, policy respected, health checked.
 
 If careen can't reach a VM's node, that host is skipped with "can't check its machine".

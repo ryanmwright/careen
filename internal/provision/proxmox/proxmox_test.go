@@ -70,6 +70,11 @@ type fakeEnv struct {
 	tfjson string
 	// guestAgent is the pve entry's guestAgent; nil leaves it out.
 	guestAgent *bool
+	// planDelay is how long tofu plan takes.
+	planDelay time.Duration
+	// qemuGuest is what evaluating a host's services.qemuGuest.enable
+	// prints; empty fails the eval.
+	qemuGuest string
 }
 
 func (f *fakeEnv) provisioner(t *testing.T, api *httptest.Server) *Proxmox {
@@ -94,6 +99,11 @@ func (f *fakeEnv) provisioner(t *testing.T, api *httptest.Server) *Proxmox {
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			f.record(name+" "+strings.Join(args, " "), nil, "")
 			switch {
+			case slices.Contains(args, "eval") && strings.HasSuffix(args[len(args)-1], ".config.services.qemuGuest.enable"):
+				if f.qemuGuest == "" {
+					return nil, fmt.Errorf("no such attribute")
+				}
+				return []byte(f.qemuGuest), nil
 			case slices.Contains(args, "eval"):
 				return cfgJSON, nil
 			case slices.Contains(args, "flake?rev=abc#pve-tofu"):
@@ -112,6 +122,9 @@ func (f *fakeEnv) provisioner(t *testing.T, api *httptest.Server) *Proxmox {
 				in = string(b)
 			}
 			f.record(filepath.Base(name)+" "+strings.Join(args, " "), env, in)
+			if filepath.Base(name) == "tofu" && args[0] == "plan" {
+				time.Sleep(f.planDelay)
+			}
 			if filepath.Base(name) == "tofu" && args[0] == "show" {
 				return []byte(f.showJSON), nil
 			}
@@ -218,6 +231,38 @@ func TestEnsureCreates(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(p.Dir, "main.tf.json")); err != nil || string(b) != `{"resource":{}}` {
 		t.Errorf("rendered config = %q, %v", b, err)
+	}
+}
+
+func TestPlanSaysItStillRuns(t *testing.T) {
+	api := agentServer(t, 0, 0)
+	defer api.Close()
+	f := &fakeEnv{showJSON: createPlan, planDelay: 50 * time.Millisecond}
+	p := f.provisioner(t, api)
+	p.PlanNotice = 20 * time.Millisecond
+	var mu sync.Mutex
+	var steps []string
+	_, err := p.Ensure(context.Background(), inventory.Host{Name: "node1", Address: "10.0.0.31"}, func(_, _, msg string) {
+		mu.Lock()
+		defer mu.Unlock()
+		steps = append(steps, msg)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	said := strings.Join(steps, "\n")
+	if !strings.HasPrefix(said, "planning with OpenTofu\ntofu plan still running") || !strings.Contains(said, "guest agent doesn't answer") {
+		t.Errorf("progress:\n%s", said)
+	}
+
+	// Plan, for the preview before confirming, writes to Notice.
+	var notice strings.Builder
+	p.Notice = &notice
+	if _, err := p.Plan(context.Background(), []inventory.Host{{Name: "node1"}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(notice.String(), "    node1: planning with OpenTofu\n    node1: tofu plan still running") {
+		t.Errorf("notice:\n%s", notice.String())
 	}
 }
 

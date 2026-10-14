@@ -61,7 +61,8 @@ type VM struct {
 	Node string `json:"node"`
 	VMID int    `json:"vmid"`
 	// GuestAgent says whether the host's own NixOS config runs the QEMU
-	// guest agent. Nil when the flake doesn't say (an older flake).
+	// guest agent. Nil when the flake doesn't say; careen then reads the
+	// host's services.qemuGuest.enable (see hasAgent).
 	GuestAgent *bool `json:"guestAgent"`
 }
 
@@ -123,6 +124,12 @@ type Proxmox struct {
 	API func(endpoint, token string) *API
 	// Poll and AgentTimeout bound waiting for a guest agent.
 	Poll, AgentTimeout time.Duration
+	// PlanNotice is how often a running tofu plan says it still runs
+	// (waitNotice when zero).
+	PlanNotice time.Duration
+	// Notice, when set, is where Plan, which has no progress to report
+	// through, says what it is doing.
+	Notice io.Writer
 	// Scan reads the key a machine's sshd serves (agekey.ScanLine when
 	// nil), to know the key read through the agent is the one in use.
 	Scan func(ctx context.Context, address string, port int) (string, error)
@@ -137,11 +144,15 @@ type Proxmox struct {
 	// entry). Without the guest agent, sshd's key must be one of them.
 	TrustedKeys func(h inventory.Host) []string
 
-	once  sync.Once
-	err   error
-	cfg   *Config
-	tofu  string
-	token string
+	once   sync.Once
+	err    error
+	cfg    *Config
+	tofu   string
+	token  string
+	tfjson []byte
+
+	agentMu sync.Mutex
+	agents  map[string]bool
 }
 
 const planFile = "careen.tfplan"
@@ -197,11 +208,8 @@ func (p *Proxmox) doPrepare(ctx context.Context) error {
 	if err := writeFile(filepath.Join(p.Dir, "main.tf.json"), tfjson); err != nil {
 		return err
 	}
-	override, err := noRebootOverride(tfjson)
-	if err != nil {
-		return err
-	}
-	if err := writeFile(filepath.Join(p.Dir, overrideFile), override); err != nil {
+	p.tfjson = tfjson
+	if err := p.writeOverride(nil); err != nil {
 		return err
 	}
 	p.tofu = filepath.Join(paths[1], "bin", "tofu")
@@ -260,7 +268,9 @@ func (p *Proxmox) targets(hosts []inventory.Host) ([]string, error) {
 	return args, nil
 }
 
-func (p *Proxmox) plan(ctx context.Context, hosts []inventory.Host, destroy bool) (provision.Plan, error) {
+// plan runs tofu plan for hosts, telling say what it is doing.
+func (p *Proxmox) plan(ctx context.Context, hosts []inventory.Host, destroy bool, say func(string)) (provision.Plan, error) {
+	say("planning with OpenTofu")
 	if err := p.prepare(ctx); err != nil {
 		return provision.Plan{}, err
 	}
@@ -268,11 +278,23 @@ func (p *Proxmox) plan(ctx context.Context, hosts []inventory.Host, destroy bool
 	if err != nil {
 		return provision.Plan{}, err
 	}
+	var agentless []string
+	for _, h := range hosts {
+		if !p.hasAgent(ctx, h) {
+			agentless = append(agentless, h.Name)
+		}
+	}
+	if err := p.writeOverride(agentless); err != nil {
+		return provision.Plan{}, err
+	}
 	args := []string{"plan", "-input=false", "-out=" + planFile}
 	if destroy {
 		args = append(args, "-destroy")
 	}
-	if _, err := p.tf(ctx, true, append(args, targets...)...); err != nil {
+	stop := p.stillPlanning(say)
+	_, err = p.tf(ctx, true, append(args, targets...)...)
+	stop()
+	if err != nil {
 		return provision.Plan{}, err
 	}
 	out, err := p.tf(ctx, false, "show", "-json", planFile)
@@ -295,13 +317,69 @@ func (p *Proxmox) plan(ctx context.Context, hosts []inventory.Host, destroy bool
 	return pl, nil
 }
 
+// stillPlanning tells say every PlanNotice that tofu plan is still running,
+// until the returned stop is called. The first notice names the usual
+// cause: the provider reads each VM's IPs from its guest agent and, when the
+// agent doesn't answer, waits out the agent timeout in pve-tofu.
+func (p *Proxmox) stillPlanning(say func(string)) (stop func()) {
+	every := p.PlanNotice
+	if every <= 0 {
+		every = waitNotice
+	}
+	start := time.Now()
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for first := true; ; first = false {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
+			msg := fmt.Sprintf("tofu plan still running (%s)", time.Since(start).Round(time.Second))
+			if first {
+				msg += "; a VM whose guest agent doesn't answer holds it for the agent timeout pve-tofu sets (see `careen up --timings`)"
+			}
+			say(msg)
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
+}
+
+// notice is say for Plan: lines on Notice, naming the hosts.
+func (p *Proxmox) notice(hosts []inventory.Host) func(string) {
+	if p.Notice == nil {
+		return func(string) {}
+	}
+	names := make([]string, len(hosts))
+	for i, h := range hosts {
+		names[i] = h.Name
+	}
+	return func(msg string) { fmt.Fprintf(p.Notice, "    %s: %s\n", strings.Join(names, ", "), msg) }
+}
+
+// each is say for Apply and Destroy: progress for every host.
+func each(hosts []inventory.Host, progress provision.Progress) func(string) {
+	return func(msg string) {
+		for _, h := range hosts {
+			progress(h.Name, "provision", msg)
+		}
+	}
+}
+
 func (p *Proxmox) Plan(ctx context.Context, hosts []inventory.Host, destroy bool) (provision.Plan, error) {
-	return p.plan(ctx, hosts, destroy)
+	return p.plan(ctx, hosts, destroy, p.notice(hosts))
 }
 
 // apply plans and, if the plan changes anything, applies it.
 func (p *Proxmox) apply(ctx context.Context, hosts []inventory.Host, destroy bool, progress provision.Progress) (provision.Plan, error) {
-	pl, err := p.plan(ctx, hosts, destroy)
+	pl, err := p.plan(ctx, hosts, destroy, each(hosts, progress))
 	if err != nil {
 		return pl, err
 	}
@@ -332,7 +410,7 @@ var ErrReplace = errors.New("the plan replaces the VM, destroying its disks")
 
 func (p *Proxmox) Ensure(ctx context.Context, h inventory.Host, progress provision.Progress) (provision.Machine, error) {
 	start := time.Now()
-	pl, err := p.plan(ctx, []inventory.Host{h}, false)
+	pl, err := p.plan(ctx, []inventory.Host{h}, false, func(msg string) { progress(h.Name, "provision", msg) })
 	if err != nil {
 		return provision.Machine{}, err
 	}
@@ -361,11 +439,11 @@ func (p *Proxmox) Ensure(ctx context.Context, h inventory.Host, progress provisi
 	if !created {
 		switch {
 		case p.NoAgentWait:
-			progress(h.Name, "provision", "not waiting for the guest agent (--no-agent-wait); using SSH instead")
-			return p.overSSH(ctx, h, vm, progress)
-		case vm.GuestAgent != nil && !*vm.GuestAgent:
-			progress(h.Name, "provision", h.Name+"'s config has no guest agent; using SSH instead")
-			return p.overSSH(ctx, h, vm, progress)
+			progress(h.Name, "provision", "not waiting for the guest agent (--no-agent-wait); checking its SSH key against the repo and known_hosts")
+			return p.overSSH(ctx, h)
+		case !p.hasAgent(ctx, h):
+			progress(h.Name, "provision", h.Name+"'s config doesn't run the QEMU guest agent; checking its SSH key against the repo and known_hosts")
+			return p.overSSH(ctx, h)
 		}
 	}
 	// A new VM boots the template, which has an agent whatever the host's
@@ -408,8 +486,7 @@ func (p *Proxmox) Ensure(ctx context.Context, h inventory.Host, progress provisi
 // overSSH is Ensure for an existing VM without its guest agent: the key
 // sshd serves must be one careen already trusts (see verifiedKey), and it
 // stands in for the key the agent would have read.
-func (p *Proxmox) overSSH(ctx context.Context, h inventory.Host, vm VM, progress provision.Progress) (provision.Machine, error) {
-	progress(h.Name, "provision", fmt.Sprintf("warning: without the guest agent Proxmox can't show VM %d's IP; careen uses %s from the inventory", vm.VMID, h.Address))
+func (p *Proxmox) overSSH(ctx context.Context, h inventory.Host) (provision.Machine, error) {
 	key, err := p.verifiedKey(ctx, h)
 	if err != nil {
 		return provision.Machine{}, fmt.Errorf("%s: no guest agent to ask, and %w", h.Name, err)
@@ -435,7 +512,7 @@ func (p *Proxmox) agentSilent(ctx context.Context, api *API, h inventory.Host, v
 	}
 	switch state := strings.TrimSpace(string(out)); state {
 	case "missing":
-		progress(h.Name, "provision", "warning: the deployed generation has no guest agent (it was overwritten by a deploy from a flake without it); continuing over SSH, since the deploy brings it back")
+		progress(h.Name, "provision", fmt.Sprintf("warning: the running system has no guest agent, though %s's config has one (it was deployed from an older commit); continuing over SSH, and the deploy brings the agent back", h.Name))
 		return m, nil
 	case "active":
 		return provision.Machine{}, fmt.Errorf("%s: the guest agent runs in the VM but Proxmox can't reach it (is the agent enabled on VM %d?): %v", h.Name, vm.VMID, waitErr)
@@ -572,29 +649,112 @@ func (p *Proxmox) settledKey(ctx context.Context, api *API, h inventory.Host, vm
 	}
 }
 
+// hasAgent says whether h's own NixOS config runs the QEMU guest agent: its
+// pve entry's guestAgent, else the host's services.qemuGuest.enable (an
+// eval of the locked flake, which the runner caches). If neither answers
+// careen assumes it does, and an agent that doesn't answer is found out by
+// waiting for it.
+func (p *Proxmox) hasAgent(ctx context.Context, h inventory.Host) bool {
+	if vm, ok := p.cfg.Hosts[h.Name]; ok && vm.GuestAgent != nil {
+		return *vm.GuestAgent
+	}
+	p.agentMu.Lock()
+	defer p.agentMu.Unlock()
+	if v, ok := p.agents[h.Name]; ok {
+		return v
+	}
+	v := true
+	out, err := p.Run(ctx, "nix", "eval", "--json", p.Flake.BuildRef()+"#nixosConfigurations."+h.Name+".config.services.qemuGuest.enable")
+	if err == nil {
+		var b bool
+		if json.Unmarshal(out, &b) == nil {
+			v = b
+		}
+	}
+	if p.agents == nil {
+		p.agents = map[string]bool{}
+	}
+	p.agents[h.Name] = v
+	return v
+}
+
 // overrideFile is an OpenTofu override file: it's merged after main.tf.json
 // and its values win.
 const overrideFile = "careen_override.tf.json"
 
-// noRebootOverride sets reboot_after_update = false on every VM in the
-// rendered config, whatever the flake set. careen restarts VMs itself, one
-// at a time and per rebootPolicy (qm reboot for pending hardware changes);
-// the provider rebooting running VMs during an apply would bypass all of
-// that. An override must name existing resources, so they're read from the
+// writeOverride writes the override file for a plan of hosts, agentless
+// naming those whose config doesn't run the guest agent.
+func (p *Proxmox) writeOverride(agentless []string) error {
+	b, err := override(p.tfjson, agentless)
+	if err != nil {
+		return err
+	}
+	return writeFile(filepath.Join(p.Dir, overrideFile), b)
+}
+
+// override sets reboot_after_update = false on every VM in the rendered
+// config, whatever the flake set. careen restarts VMs itself, one at a time
+// and per rebootPolicy (see Restart); the provider rebooting running VMs
+// during an apply would bypass all of that.
+//
+// For the agentless VMs whose agent block is enabled it also shortens
+// agent.timeout to agentlessTimeout. The provider reads each VM's IPs from
+// its agent on every refresh and waits up to that timeout for an agent that
+// isn't there, holding every plan; running out is only a warning. The agent
+// stays enabled: a new VM boots the template, whose agent careen reads the
+// first host key through. An override replaces a whole nested block, so
+// the rendered block is copied. (Newer providers'
+// agent.wait_for_ip.disabled would skip the wait, but older ones reject
+// it.)
+//
+// An override must name existing resources, so they're read from the
 // config rather than the inventory.
-func noRebootOverride(tfjson []byte) ([]byte, error) {
+func override(tfjson []byte, agentless []string) ([]byte, error) {
 	var cfg struct {
-		Resource map[string]map[string]json.RawMessage `json:"resource"`
+		Resource map[string]map[string]map[string]json.RawMessage `json:"resource"`
 	}
 	if err := json.Unmarshal(tfjson, &cfg); err != nil {
 		return nil, fmt.Errorf("reading the rendered OpenTofu config: %w", err)
 	}
 	vms := map[string]any{}
-	for name := range cfg.Resource[Resource] {
-		vms[name] = map[string]any{"reboot_after_update": false}
+	for name, attrs := range cfg.Resource[Resource] {
+		vm := map[string]any{"reboot_after_update": false}
+		if slices.Contains(agentless, name) {
+			if agent, ok := shortAgentTimeout(attrs["agent"]); ok {
+				vm["agent"] = agent
+			}
+		}
+		vms[name] = vm
 	}
 	if len(vms) == 0 {
 		return []byte("{}\n"), nil
 	}
 	return json.MarshalIndent(map[string]any{"resource": map[string]any{Resource: vms}}, "", "  ")
+}
+
+// agentlessTimeout is agent.timeout for a VM whose config doesn't run
+// the agent.
+const agentlessTimeout = "1s"
+
+// shortAgentTimeout is a rendered agent block (an object, or a list of
+// one) with agentlessTimeout; false when there's no enabled agent to
+// change.
+func shortAgentTimeout(raw json.RawMessage) (any, bool) {
+	var block map[string]any
+	list := false
+	if json.Unmarshal(raw, &block) != nil {
+		var blocks []map[string]any
+		if json.Unmarshal(raw, &blocks) != nil || len(blocks) != 1 {
+			return nil, false
+		}
+		block, list = blocks[0], true
+	}
+	if block["enabled"] != true {
+		return nil, false
+	}
+	block["timeout"] = agentlessTimeout
+	if list {
+		return []any{block}, true
+	}
+	return block, true
 }

@@ -135,10 +135,11 @@ func NewProvisioners(inv *inventory.Inventory, dec *Decrypter) *Provisioners {
 		dec:      dec,
 		existing: provision.Existing{},
 		proxmox: &proxmox.Proxmox{
-			Flake: inv.Flake,
-			Dir:   filepath.Join(StateDir(), "pve"),
-			Run:   execx.Run,
-			Cmd:   proxmox.RunCmd,
+			Flake:  inv.Flake,
+			Dir:    filepath.Join(StateDir(), "pve"),
+			Run:    inventory.CacheEvals(inv.Flake.Locked, execx.Run),
+			Cmd:    proxmox.RunCmd,
+			Notice: dec.Prompt,
 			Token: func(ctx context.Context, file, key string) (string, error) {
 				return dec.Decrypt(ctx, "the Proxmox API token", file, key)
 			},
