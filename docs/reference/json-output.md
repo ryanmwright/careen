@@ -18,7 +18,7 @@ Printed once by a read command with `--json` (or once per line with `--watch --j
 | `careen.logs.entry/v1` | `careen logs --follow` | One line per journal entry, streamed. |
 | `careen.vulns/v1` | `careen vulns` | Per host: the scanned system and its CVEs. |
 | `careen.keys/v1` | `careen keys` | Per host: recorded and live keys, their state and files not re-keyed. |
-| `careen.secrets/v1` | `careen secrets` | Per host: secrets files and the names in them (never values). |
+| `careen.secrets/v1` | `careen secrets` | Per host, and for the shared files: secrets files and the names in them (never values). |
 | `careen.add/v1` | `careen add` | Each onboarding step per host and whether it's done (also with `--status`). |
 | `careen.doctor/v1` | `careen doctor` | Each check and its result. |
 | `careen.error/v1` | any command | An error before a command chose its own schema (an unknown command, for example). |

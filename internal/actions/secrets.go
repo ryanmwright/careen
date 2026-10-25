@@ -11,6 +11,7 @@ import (
 
 	"github.com/ryanmwright/careen/internal/contract"
 	"github.com/ryanmwright/careen/internal/repo"
+	"github.com/ryanmwright/careen/internal/sopsconf"
 	"github.com/ryanmwright/careen/internal/sopsfile"
 )
 
@@ -43,7 +44,9 @@ type SecretsReport struct {
 }
 
 // Secrets lists the secrets of the hosts in .sops.yaml (or only those
-// named), and the shared files, without decrypting anything.
+// named), and the files hosts share (every file under the secrets root
+// that a creation rule covers and that isn't a host's own), without
+// decrypting anything.
 func Secrets(rp *repo.Repo, only []string) (SecretsReport, error) {
 	conf, err := rp.Sops()
 	if err != nil {
@@ -72,21 +75,36 @@ func Secrets(rp *repo.Repo, only []string) (SecretsReport, error) {
 		}
 		return sf
 	}
+	own := map[string]bool{}
 	for _, k := range conf.Keys {
 		host, ok := rp.Settings.AnchorHost(k.Anchor)
-		if !ok || (len(only) > 0 && !slices.Contains(only, host)) {
+		if !ok {
+			continue
+		}
+		files := rp.HostSecrets(host)
+		for _, f := range files {
+			own[f] = true
+		}
+		if len(only) > 0 && !slices.Contains(only, host) {
 			continue
 		}
 		hs := HostSecrets{Host: host, Files: []SecretFile{}}
-		for _, f := range rp.HostSecrets(host) {
+		for _, f := range files {
 			hs.Files = append(hs.Files, describe(f))
 		}
 		rep.Hosts = append(rep.Hosts, hs)
 	}
-	for _, f := range rp.SharedSecrets() {
-		rep.Shared = append(rep.Shared, describe(f))
+	for _, f := range rp.SecretFiles() {
+		if !own[f] && hasRule(conf, f) {
+			rep.Shared = append(rep.Shared, describe(f))
+		}
 	}
 	return rep, nil
+}
+
+// hasRule reports whether a creation rule covers file.
+func hasRule(conf *sopsconf.Config, file string) bool {
+	return slices.ContainsFunc(conf.Rules, func(r sopsconf.Rule) bool { return matches(r.PathRegex, file) })
 }
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
