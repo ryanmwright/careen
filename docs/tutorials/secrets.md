@@ -137,8 +137,9 @@ $ careen deploy --only web2
 
 - Secrets every host shares: add a rule for `secrets/common/.*\.yaml$` and list it in
   `sharedRules`; `careen add` joins new hosts to it.
-- Secrets only some hosts share: add a rule for, say, `secrets/backup/.*\.yaml$` with those hosts'
-  anchors. `careen secrets` lists the file, and `careen keys` re-keys it with its hosts' files.
+- Secrets only some hosts share: `careen secrets group create backup web1 web2`, then
+  `careen secrets set --group backup NAME` (the example sets `groupsDir`). See
+  [Secret groups](../guides/onboarding.md#secret-groups).
 - A master key on a security key: use a PGP key in `masterKeys.pgp` instead; careen asks you to touch
   it when it needs it. See [Onboarding, keys and secrets](../guides/onboarding.md).
 - `careen doctor` checks the whole setup, including whether your master key is available.

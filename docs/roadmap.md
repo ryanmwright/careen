@@ -20,3 +20,8 @@ setups, so several flakes needn't each write the same hooks.
 - **Safer state handling:** refuse a truncated state file instead of planning against it.
 - **Stale templates:** rebuild a node's template when it's older than the template host's config.
 - **Other provisioners**, such as nixos-anywhere for bare metal and VPSs.
+
+## Secrets
+
+- **Secret groups in the TUI:** set, edit and re-key a group's files there; today it lists them.
+- **`careen add --group`**, to join groups while onboarding a host.

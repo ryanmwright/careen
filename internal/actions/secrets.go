@@ -37,22 +37,31 @@ type HostSecrets struct {
 	Files []SecretFile `json:"files"`
 }
 
+// GroupSecrets is a secret group: its hosts and its files.
+type GroupSecrets struct {
+	Group string       `json:"group"`
+	Hosts []string     `json:"hosts"`
+	Files []SecretFile `json:"files"`
+}
+
 type SecretsReport struct {
 	contract.Header
-	Hosts  []HostSecrets `json:"hosts"`
-	Shared []SecretFile  `json:"shared"`
+	Hosts  []HostSecrets  `json:"hosts"`
+	Groups []GroupSecrets `json:"groups"`
+	Shared []SecretFile   `json:"shared"`
 }
 
 // Secrets lists the secrets of the hosts in .sops.yaml (or only those
-// named), and the files hosts share (every file under the secrets root
-// that a creation rule covers and that isn't a host's own), without
-// decrypting anything.
+// named), of the secret groups (those with a named host, if any are
+// named), and the other files hosts share (every file under the secrets
+// root that a creation rule covers and that isn't a host's or a group's),
+// without decrypting anything.
 func Secrets(rp *repo.Repo, only []string) (SecretsReport, error) {
 	conf, err := rp.Sops()
 	if err != nil {
 		return SecretsReport{}, err
 	}
-	rep := SecretsReport{Header: contract.NewHeader(SecretsSchema), Hosts: []HostSecrets{}, Shared: []SecretFile{}}
+	rep := SecretsReport{Header: contract.NewHeader(SecretsSchema), Hosts: []HostSecrets{}, Groups: []GroupSecrets{}, Shared: []SecretFile{}}
 	describe := func(f string) SecretFile {
 		sf := SecretFile{Path: f, Names: []string{}, Missing: []string{}}
 		m, err := sopsfile.ReadMeta(rp.Path(f))
@@ -94,6 +103,20 @@ func Secrets(rp *repo.Repo, only []string) (SecretsReport, error) {
 		}
 		rep.Hosts = append(rep.Hosts, hs)
 	}
+	for _, g := range groups(rp, conf) {
+		files := groupFiles(rp, g.name)
+		for _, f := range files {
+			own[f] = true
+		}
+		if len(only) > 0 && !slices.ContainsFunc(only, func(h string) bool { return slices.Contains(g.hosts, h) }) {
+			continue
+		}
+		gs := GroupSecrets{Group: g.name, Hosts: g.hosts, Files: []SecretFile{}}
+		for _, f := range files {
+			gs.Files = append(gs.Files, describe(f))
+		}
+		rep.Groups = append(rep.Groups, gs)
+	}
 	for _, f := range rp.SecretFiles() {
 		if !own[f] && hasRule(conf, f) {
 			rep.Shared = append(rep.Shared, describe(f))
@@ -109,24 +132,53 @@ func hasRule(conf *sopsconf.Config, file string) bool {
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-// SecretPath is host's file (DefaultSecretsFile if empty), relative to the
-// repo.
-func SecretPath(rp *repo.Repo, host, file string) (string, error) {
+// SecretTarget is whose secrets a command changes: a host's, or a
+// secret group's when Group is set.
+type SecretTarget struct {
+	Host  string
+	Group string
+}
+
+// String names the target in messages: "web1's secrets" or "group backup".
+func (t SecretTarget) String() string {
+	if t.Group != "" {
+		return "group " + t.Group
+	}
+	return t.Host + "'s secrets"
+}
+
+// SecretPath is the target's file (DefaultSecretsFile if empty), relative
+// to the repo. A group must exist.
+func SecretPath(rp *repo.Repo, t SecretTarget, file string) (string, error) {
 	file = cmpOr(file, DefaultSecretsFile)
 	if filepath.Base(file) != file || filepath.Ext(file) != ".yaml" {
 		return "", contract.Usage("secrets file must be a plain name ending in .yaml, not %q", file)
 	}
-	return filepath.ToSlash(filepath.Join(rp.SecretsDir(host), file)), nil
+	dir := rp.SecretsDir(t.Host)
+	if t.Group != "" {
+		if err := checkGroup(rp, t.Group); err != nil {
+			return "", err
+		}
+		conf, err := rp.Sops()
+		if err != nil {
+			return "", err
+		}
+		if _, ok := conf.Rule(rp.GroupRule(t.Group)); !ok {
+			return "", noGroup(rp, t.Group)
+		}
+		dir = rp.GroupDir(t.Group)
+	}
+	return filepath.ToSlash(filepath.Join(dir, file)), nil
 }
 
-// SetSecret sets name in host's file. A new file is created holding just
+// SetSecret sets name in the target's file. A new file is created holding just
 // it, which needs only public keys; changing an existing file needs the
 // master key. The value is given to sops on stdin only.
-func SetSecret(ctx context.Context, rp *repo.Repo, host, file, name, value string) (created bool, err error) {
+func SetSecret(ctx context.Context, rp *repo.Repo, t SecretTarget, file, name, value string) (created bool, err error) {
 	if !nameRE.MatchString(name) {
 		return false, contract.Usage("secret names are letters, digits, _ . and -, not %q", name)
 	}
-	path, err := SecretPath(rp, host, file)
+	path, err := SecretPath(rp, t, file)
 	if err != nil {
 		return false, err
 	}
@@ -149,9 +201,9 @@ func SetSecret(ctx context.Context, rp *repo.Repo, host, file, name, value strin
 	return false, nil
 }
 
-// UnsetSecret removes name from host's file.
-func UnsetSecret(ctx context.Context, rp *repo.Repo, host, file, name string) error {
-	path, err := SecretPath(rp, host, file)
+// UnsetSecret removes name from the target's file.
+func UnsetSecret(ctx context.Context, rp *repo.Repo, t SecretTarget, file, name string) error {
+	path, err := SecretPath(rp, t, file)
 	if err != nil {
 		return err
 	}
@@ -164,10 +216,11 @@ func UnsetSecret(ctx context.Context, rp *repo.Repo, host, file, name string) er
 	return nil
 }
 
-// EditSecrets is the command that opens host's file in $EDITOR through
-// sops, creating its directory first; the caller runs it in a terminal.
-func EditSecrets(ctx context.Context, rp *repo.Repo, host, file string) (*exec.Cmd, string, error) {
-	path, err := SecretPath(rp, host, file)
+// EditSecrets is the command that opens the target's file in $EDITOR
+// through sops, creating its directory first; the caller runs it in a
+// terminal.
+func EditSecrets(ctx context.Context, rp *repo.Repo, t SecretTarget, file string) (*exec.Cmd, string, error) {
+	path, err := SecretPath(rp, t, file)
 	if err != nil {
 		return nil, "", err
 	}

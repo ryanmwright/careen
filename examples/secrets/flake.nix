@@ -61,6 +61,8 @@
           age = [ "admin" ];
         };
         sharedRules = [ ];
+        # Secret groups (files some hosts share) go in secrets/<group>/.
+        groupsDir = "secrets";
       };
       # --8<-- [end:careen-settings]
 

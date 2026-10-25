@@ -30,6 +30,9 @@ type Settings struct {
 		Age []string `json:"age"`
 	} `json:"masterKeys"`
 	SharedRules []string `json:"sharedRules"`
+	// GroupsDir holds secret groups, one directory each: files encrypted
+	// to the master keys and the group's hosts. Optional.
+	GroupsDir string `json:"groupsDir"`
 	// AnchorSuffix names each host's key anchor in .sops.yaml:
 	// <host><AnchorSuffix>. Default "_host".
 	AnchorSuffix string `json:"anchorSuffix"`
@@ -167,6 +170,13 @@ func (s Settings) HostKeyFile(host string) string {
 func (r *Repo) HostKeyFile(host string) string { return r.Settings.HostKeyFile(host) }
 func (r *Repo) HostRule(host string) string {
 	return r.Settings.SecretsDir + "/" + host + `/.*\.yaml$`
+}
+
+// GroupDir and GroupRule are group's secrets directory and the path regex
+// of its creation rule.
+func (r *Repo) GroupDir(group string) string { return filepath.Join(r.Settings.GroupsDir, group) }
+func (r *Repo) GroupRule(group string) string {
+	return r.Settings.GroupsDir + "/" + group + `/.*\.yaml$`
 }
 
 // Sops loads the .sops.yaml.

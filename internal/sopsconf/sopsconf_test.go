@@ -88,3 +88,30 @@ func TestAddHost(t *testing.T) {
 		t.Error("repeating the edits changed the file")
 	}
 }
+
+func TestLeaveRule(t *testing.T) {
+	c, _ := load(t)
+	if err := c.LeaveRule(common, "mgr_host"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := c.Rule(common); !slices.Equal(r.Age, []string{"app2_host", "app4_host", "app5_host", "app1_host", "app3_host"}) {
+		t.Errorf("common rule age = %v", r.Age)
+	}
+	if !strings.Contains(string(c.Bytes()), "        age: [*app2_host, *app4_host, *app5_host, *app1_host, *app3_host]\n") {
+		t.Errorf("age line not rewritten in place:\n%s", c.Bytes())
+	}
+	// Leaving twice changes nothing; joining again restores the members.
+	before := string(c.Bytes())
+	if err := c.LeaveRule(common, "mgr_host"); err != nil || string(c.Bytes()) != before {
+		t.Errorf("leaving again: %v, changed %v", err, string(c.Bytes()) != before)
+	}
+	if err := c.LeaveRule("nope/.*", "mgr_host"); err == nil {
+		t.Error("leaving a missing rule succeeded")
+	}
+	for _, a := range []string{"app2_host", "app4_host", "app5_host", "app1_host", "app3_host"} {
+		c.LeaveRule(common, a)
+	}
+	if !strings.Contains(string(c.Bytes()), "        age: []\n") {
+		t.Errorf("empty list:\n%s", c.Bytes())
+	}
+}

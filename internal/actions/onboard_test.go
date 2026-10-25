@@ -166,7 +166,7 @@ func TestAddResumes(t *testing.T) {
 	if len(rep.Hosts) != 1 || rep.Hosts[0].State != KeyUnreachable && rep.Hosts[0].State != KeyOK {
 		t.Errorf("keys = %+v", rep.Hosts)
 	}
-	created, err := SetSecret(ctx, rp, "web1", "", "api_token", "t0ken")
+	created, err := SetSecret(ctx, rp, SecretTarget{Host: "web1"}, "", "api_token", "t0ken")
 	if err != nil || !created {
 		t.Fatalf("set: created=%v err=%v", created, err)
 	}

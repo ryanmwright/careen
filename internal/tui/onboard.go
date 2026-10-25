@@ -37,6 +37,8 @@ type onboardState struct {
 type secretRow struct {
 	host, file, name string
 	missing          []string
+	// label heads a row with no host: "shared" or "group NAME (hosts)".
+	label string
 }
 
 // secretPrompt asks for a new secret's name and value, or a new value.
@@ -317,8 +319,8 @@ func (m Model) secretRows() []secretRow {
 		return nil
 	}
 	var rows []secretRow
-	add := func(host string, files []actions.SecretFile) {
-		rows = append(rows, secretRow{host: host})
+	add := func(host, label string, files []actions.SecretFile) {
+		rows = append(rows, secretRow{host: host, label: label})
 		for _, f := range files {
 			rows = append(rows, secretRow{host: host, file: f.Path, missing: f.Missing})
 			for _, n := range f.Names {
@@ -327,10 +329,13 @@ func (m Model) secretRows() []secretRow {
 		}
 	}
 	for _, h := range rep.Hosts {
-		add(h.Host, h.Files)
+		add(h.Host, "", h.Files)
+	}
+	for _, g := range rep.Groups {
+		add("", "group "+g.Group+" ("+cmpOrStr(strings.Join(g.Hosts, ", "), "no hosts")+")", g.Files)
 	}
 	if len(rep.Shared) > 0 {
-		add("", rep.Shared)
+		add("", "shared", rep.Shared)
 	}
 	return rows
 }
@@ -365,7 +370,7 @@ func (m Model) secretsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadSecrets()
 	case "e":
 		if r.host == "" {
-			m.setFlash("shared files: edit them with sops directly", true)
+			m.setFlash("shared and group files: use careen secrets edit --group, or sops", true)
 			return m, nil
 		}
 		c, err := m.be.EditSecrets(m.ctx, r.host, baseName(r.file))
@@ -380,6 +385,9 @@ func (m Model) secretsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.startPrompt(secretPrompt{asking: "name", host: r.host, file: baseName(r.file)})
 	case "u":
+		if r.host == "" {
+			return m, nil
+		}
 		if r.name == "" {
 			m.setFlash("pick a secret's name first", true)
 			return m, nil
@@ -637,7 +645,7 @@ func (m Model) secretsView() []string {
 			var line string
 			switch {
 			case r.file == "":
-				line = styleTitle.Render(cmpOrStr(r.host, "shared"))
+				line = styleTitle.Render(cmpOrStr(r.host, r.label))
 			case r.name == "":
 				line = "  " + r.file
 				if len(r.missing) > 0 {
