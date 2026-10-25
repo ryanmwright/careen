@@ -206,6 +206,26 @@ func (c *Config) JoinRule(pathRegex, anchor string) error {
 	return c.reparse(func(n *Config) bool { nr, ok := n.Rule(pathRegex); return ok && slices.Contains(nr.Age, anchor) })
 }
 
+// LeaveRule removes anchor from the age keys of the rule for pathRegex.
+// Like JoinRule, only a one-line "age: [*a, *b]" list can be edited.
+func (c *Config) LeaveRule(pathRegex, anchor string) error {
+	r, ok := c.Rule(pathRegex)
+	if !ok {
+		return fmt.Errorf(".sops.yaml has no rule for %s", pathRegex)
+	}
+	if !slices.Contains(r.Age, anchor) {
+		return nil
+	}
+	if r.ageLine < 0 {
+		return fmt.Errorf(".sops.yaml: the rule for %s doesn't use a one-line age: [...] list; remove *%s from it by hand", pathRegex, anchor)
+	}
+	line := c.lines[r.ageLine]
+	start, end := strings.Index(line, "["), strings.LastIndex(line, "]")
+	rest := slices.DeleteFunc(slices.Clone(r.Age), func(a string) bool { return a == anchor })
+	c.lines[r.ageLine] = line[:start] + flow(rest) + line[end+1:]
+	return c.reparse(func(n *Config) bool { nr, ok := n.Rule(pathRegex); return ok && slices.Equal(nr.Age, rest) })
+}
+
 func (c *Config) insert(at int, lines ...string) {
 	c.lines = slices.Insert(c.lines, at, lines...)
 }

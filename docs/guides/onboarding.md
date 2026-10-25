@@ -87,8 +87,32 @@ $ careen secrets edit web1             # sops opens the file in $EDITOR
 - Values only ever reach sops on stdin, never on a command line. One trailing newline is dropped
   unless `--keep-newline`.
 - The default file is `secrets.yaml` in the host's secrets directory; `--file` picks another.
-- `careen secrets` also lists the shared files: every file under the secrets root that a creation
-  rule covers and that isn't a host's own. `set`, `unset` and `edit` change only host files.
+- `careen secrets` also lists the [secret groups](#secret-groups) and the other shared files:
+  every file under the secrets root that a creation rule covers and that isn't a host's or a
+  group's. `set`, `unset` and `edit` change host and group files.
+
+## Secret groups
+
+A secret group is a directory of secrets files that some hosts share, such as a backup password
+for the hosts that back up. It needs `groupsDir` in the [flake settings](../concepts/flake-settings.md).
+
+```console
+$ careen secrets group create backup web1 db1    # a creation rule: master keys, web1, db1
+$ careen secrets set --group backup restic_password
+$ careen secrets edit --group backup
+$ careen secrets group add backup web2           # web2 joins; the group's files are re-keyed
+$ careen secrets group remove backup web1        # web1 leaves; re-keyed without it
+```
+
+- A group is just its creation rule, `<groupsDir>/<group>/.*\.yaml$`, and its hosts are the host
+  anchors in it. A rule of that form written by hand is a group too.
+- Hosts read a group's file like any other sops file, for example with sops-nix's
+  `sops.secrets.<name>.sopsFile`.
+- `careen keys`, `keys rekey` and `keys register` cover a host's groups along with its own files.
+- A host that isn't registered yet can join a group; registering it re-keys the group's files.
+  Until then, sops can't re-key them, so removing hosts from that group waits.
+- **Removing a host doesn't revoke anything.** It can still read every value it could before from
+  the repository's history, so rotate them.
 
 ## The master key
 

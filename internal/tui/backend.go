@@ -248,7 +248,7 @@ func (r real) SetSecret(ctx context.Context, host, file, name, value string) (bo
 	if err != nil {
 		return false, err
 	}
-	return actions.SetSecret(ctx, rp, host, file, name, value)
+	return actions.SetSecret(ctx, rp, actions.SecretTarget{Host: host}, file, name, value)
 }
 
 func (r real) UnsetSecret(ctx context.Context, host, file, name string) error {
@@ -256,7 +256,7 @@ func (r real) UnsetSecret(ctx context.Context, host, file, name string) error {
 	if err != nil {
 		return err
 	}
-	return actions.UnsetSecret(ctx, rp, host, file, name)
+	return actions.UnsetSecret(ctx, rp, actions.SecretTarget{Host: host}, file, name)
 }
 
 func (r real) EditSecrets(ctx context.Context, host, file string) (*exec.Cmd, error) {
@@ -264,7 +264,7 @@ func (r real) EditSecrets(ctx context.Context, host, file string) (*exec.Cmd, er
 	if err != nil {
 		return nil, err
 	}
-	c, _, err := actions.EditSecrets(ctx, rp, host, file)
+	c, _, err := actions.EditSecrets(ctx, rp, actions.SecretTarget{Host: host}, file)
 	return c, err
 }
 
