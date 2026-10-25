@@ -12,8 +12,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
-	"slices"
 	"strings"
 	"text/template"
 
@@ -191,26 +189,18 @@ func (r *Repo) HostSecrets(host string) []string {
 	return r.rel(files)
 }
 
-// SharedSecrets lists the files the shared rules cover, relative to the
-// repo. It searches the top directory of secretsDir.
-func (r *Repo) SharedSecrets() []string {
-	var res []*regexp.Regexp
-	for _, s := range r.Settings.SharedRules {
-		if re, err := regexp.Compile(s); err == nil {
-			res = append(res, re)
-		}
-	}
+// SecretFiles lists every .yaml file under the top directory of
+// secretsDir, relative to the repo: host files, shared files and files only
+// some hosts share.
+func (r *Repo) SecretFiles() []string {
 	root := strings.SplitN(filepath.ToSlash(r.Settings.SecretsDir), "/", 2)[0]
-	var out []string
+	out := []string{}
 	filepath.WalkDir(r.Path(root), func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".yaml") {
 			return nil
 		}
 		rel, _ := filepath.Rel(r.Dir, p)
-		rel = filepath.ToSlash(rel)
-		if slices.ContainsFunc(res, func(re *regexp.Regexp) bool { return re.MatchString(rel) }) {
-			out = append(out, rel)
-		}
+		out = append(out, filepath.ToSlash(rel))
 		return nil
 	})
 	return out

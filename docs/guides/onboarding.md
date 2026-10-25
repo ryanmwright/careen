@@ -61,7 +61,9 @@ $ careen keys rekey --all        # re-encrypt every host's files to its current 
 ```
 
 `careen keys` compares each host's age key in `.sops.yaml` with the key its SSH host key gives
-now:
+now. A host's files are its own secrets directory and every other file under the secrets root
+whose creation rule lists the host's anchor: the shared rules, and rules for files only some
+hosts share. `rekey` and `register` re-key all of them.
 
 | State | Meaning | Fix |
 | --- | --- | --- |
@@ -75,7 +77,7 @@ now:
 ## Secrets
 
 ```console
-$ careen secrets                       # secret names per host; nothing is decrypted
+$ careen secrets                       # secret names per host and shared file; nothing is decrypted
 $ careen secrets set web1 api_token    # value from stdin, or a hidden prompt
 $ careen secrets set web1 api_token --file app.yaml < token.txt
 $ careen secrets unset web1 api_token
@@ -85,6 +87,8 @@ $ careen secrets edit web1             # sops opens the file in $EDITOR
 - Values only ever reach sops on stdin, never on a command line. One trailing newline is dropped
   unless `--keep-newline`.
 - The default file is `secrets.yaml` in the host's secrets directory; `--file` picks another.
+- `careen secrets` also lists the shared files: every file under the secrets root that a creation
+  rule covers and that isn't a host's own. `set`, `unset` and `edit` change only host files.
 
 ## The master key
 

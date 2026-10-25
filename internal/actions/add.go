@@ -353,13 +353,7 @@ func hostKeySteps(st *AddStatus, rp *repo.Repo, conf *sopsconf.Config, name stri
 		return
 	}
 	var missing []string
-	files := rp.HostSecrets(name)
-	for _, f := range rp.SharedSecrets() {
-		if fileRuleIncludes(conf, f, anchor) {
-			files = append(files, f)
-		}
-	}
-	for _, f := range files {
+	for _, f := range hostFiles(rp, conf, name) {
 		m, err := sopsfile.ReadMeta(rp.Path(f))
 		if err == nil && !slices.Contains(m.AgeRecipients, age) {
 			missing = append(missing, f)

@@ -83,17 +83,16 @@ func Keys(ctx context.Context, rp *repo.Repo, inv *inventory.Inventory, only []s
 	}
 	slices.Sort(names)
 
-	shared := rp.SharedSecrets()
 	states := make([]KeyState, len(names))
 	var wg sync.WaitGroup
 	for i, name := range names {
-		wg.Go(func() { states[i] = keyState(ctx, rp, conf, shared, name, addr[name]) })
+		wg.Go(func() { states[i] = keyState(ctx, rp, conf, name, addr[name]) })
 	}
 	wg.Wait()
 	return KeysReport{Header: contract.NewHeader(KeysSchema), Repo: rp.Dir, Hosts: states}, nil
 }
 
-func keyState(ctx context.Context, rp *repo.Repo, conf *sopsconf.Config, shared []string, host, address string) KeyState {
+func keyState(ctx context.Context, rp *repo.Repo, conf *sopsconf.Config, host, address string) KeyState {
 	if address == "" {
 		address = host
 	}
@@ -105,12 +104,7 @@ func keyState(ctx context.Context, rp *repo.Repo, conf *sopsconf.Config, shared 
 	}
 	st.Recorded = k.Value
 
-	st.Files = append(st.Files, rp.HostSecrets(host)...)
-	for _, f := range shared {
-		if fileRuleIncludes(conf, f, st.Anchor) {
-			st.Files = append(st.Files, f)
-		}
-	}
+	st.Files = append(st.Files, hostFiles(rp, conf, host)...)
 	if !rp.Settings.IsPlaceholder(k.Value) {
 		for _, f := range st.Files {
 			if m, err := sopsfile.ReadMeta(rp.Path(f)); err == nil && !slices.Contains(m.AgeRecipients, k.Value) {
@@ -142,6 +136,19 @@ func keyState(ctx context.Context, rp *repo.Repo, conf *sopsconf.Config, shared 
 		st.State = KeyOK
 	}
 	return st
+}
+
+// hostFiles lists the files host should be able to open: its own, and
+// every other file whose creation rule lists its anchor (the shared rules,
+// and rules for files only some hosts share).
+func hostFiles(rp *repo.Repo, conf *sopsconf.Config, host string) []string {
+	files := rp.HostSecrets(host)
+	for _, f := range rp.SecretFiles() {
+		if !slices.Contains(files, f) && fileRuleIncludes(conf, f, rp.Settings.Anchor(host)) {
+			files = append(files, f)
+		}
+	}
+	return files
 }
 
 // fileRuleIncludes reports whether the creation rule that covers file (the
@@ -287,20 +294,14 @@ func RegisterKey(ctx context.Context, em *contract.Emitter, rp *repo.Repo, host 
 	return RekeyHost(ctx, em, rp, host)
 }
 
-// RekeyHost re-keys host's files and the shared files, so they match
-// .sops.yaml. It needs the master key.
+// RekeyHost re-keys host's files and every other file it shares, so they
+// match .sops.yaml. It needs the master key.
 func RekeyHost(ctx context.Context, em *contract.Emitter, rp *repo.Repo, host string) error {
 	conf, err := rp.Sops()
 	if err != nil {
 		return err
 	}
-	files := rp.HostSecrets(host)
-	for _, f := range rp.SharedSecrets() {
-		if fileRuleIncludes(conf, f, rp.Settings.Anchor(host)) {
-			files = append(files, f)
-		}
-	}
-	return Rekey(ctx, em, rp, host, files)
+	return Rekey(ctx, em, rp, host, hostFiles(rp, conf, host))
 }
 
 // Rekey runs sops updatekeys on files.
